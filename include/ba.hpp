@@ -13,11 +13,11 @@
 #include "tools.hpp"
 
 #define WIN_SIZE 10
-#define GAP 5
+#define GAP 6
 #define AVG_THR
 #define FULL_HESS
-// #define ENABLE_RVIZ
-// #define ENABLE_FILTER
+#define ENABLE_RVIZ
+#define ENABLE_FILTER
 
 const double one_three = (1.0 / 3.0);
 

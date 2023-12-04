@@ -16,6 +16,7 @@ typedef std::vector<Eigen::Quaterniond, Eigen::aligned_allocator<Eigen::Quaterni
 typedef pcl::PointXYZ PointType;
 // typedef pcl::PointXYZI PointType;
 typedef Eigen::Matrix<double, 6, 6> Matrix6d;
+std::vector<double> st_pose;
 
 namespace mypcl
 {
@@ -35,7 +36,10 @@ namespace mypcl
       ss << std::setw(pcd_fill_num) << std::setfill('0') << num;
     else
       ss << num;
-    pcl::io::loadPCDFile(filePath + prefix + ss.str() + ".pcd", *pc);
+    // pcl::io::loadPCDFile(filePath + prefix + ss.str() + ".pcd", *pc);
+    std::string pcd_st = filePath + ss.str() + "/cloud.pcd";
+    // ROS_WARN("pcd file %s " , pcd_st.c_str());
+    pcl::io::loadPCDFile( pcd_st , *pc);
   }
 
   void savdPCD(std::string filePath, int pcd_fill_num, pcl::PointCloud<PointType>::Ptr& pc, int num)
@@ -47,6 +51,11 @@ namespace mypcl
       ss << num;
     pcl::io::savePCDFileBinary(filePath + ss.str() + ".pcd", *pc);
   }
+
+  std::vector<double> get_pose_stamp( )
+  {
+    return st_pose;
+  }
   
   std::vector<pose> read_pose(std::string filename,
                               Eigen::Quaterniond qe = Eigen::Quaterniond(1, 0, 0, 0),
@@ -56,14 +65,35 @@ namespace mypcl
     std::fstream file;
     file.open(filename);
     double tx, ty, tz, w, x, y, z;
+    double st;
+    std::cout << "pose filename is " << filename << std::endl;
     while(!file.eof())
     {
-      file >> tx >> ty >> tz >> w >> x >> y >> z;
+      file  >> st >> tx >> ty >> tz  >> x >> y >> z >> w;
       Eigen::Quaterniond q(w, x, y, z);
       Eigen::Vector3d t(tx, ty, tz);
       pose_vec.push_back(pose(qe * q, qe * t + te));
+      st_pose.push_back(st);
+      // ROS_WARN("st %f , w %f", st, w);
+      // ros::Duration(1).sleep();
     }
     file.close();
+    pose_vec.pop_back();
+    std::cout << "pose size is " << pose_vec.size() << std::endl;
+
+    // std::vector<pose> pose_vec;
+    // std::fstream file;
+    // file.open(filename);
+    // double tx, ty, tz, w, x, y, z;
+    // while(!file.eof())
+    // {
+    //   file >> tx >> ty >> tz >> w >> x >> y >> z;
+    //   Eigen::Quaterniond q(w, x, y, z);
+    //   Eigen::Vector3d t(tx, ty, tz);
+    //   pose_vec.push_back(pose(qe * q, qe * t + te));
+    // }
+    // file.close();
+
     return pose_vec;
   }
 
@@ -146,6 +176,11 @@ namespace mypcl
     Eigen::Vector3d t0(pose_vec[0].t(0), pose_vec[0].t(1), pose_vec[0].t(2));
     file.open(path + "pose.json", std::ofstream::app);
 
+    std::ofstream lio_path_file;
+    lio_path_file.open(path + "HBA_pose.txt", std::ofstream::trunc);
+    lio_path_file.close();
+    lio_path_file.open(path + "HBA_pose.txt", std::ios::app);
+
     for(size_t i = 0; i < pose_vec.size(); i++)
     {
       pose_vec[i].t << q0.inverse()*(pose_vec[i].t-t0);
@@ -153,14 +188,29 @@ namespace mypcl
       pose_vec[i].q.x() = (q0.inverse()*pose_vec[i].q).x();
       pose_vec[i].q.y() = (q0.inverse()*pose_vec[i].q).y();
       pose_vec[i].q.z() = (q0.inverse()*pose_vec[i].q).z();
-      file << pose_vec[i].t(0) << " "
-           << pose_vec[i].t(1) << " "
-           << pose_vec[i].t(2) << " "
-           << pose_vec[i].q.w() << " " << pose_vec[i].q.x() << " "
-           << pose_vec[i].q.y() << " " << pose_vec[i].q.z();
-      if(i < pose_vec.size()-1) file << "\n";
+      // file << pose_vec[i].t(0) << " "
+      //      << pose_vec[i].t(1) << " "
+      //      << pose_vec[i].t(2) << " "
+      //      << pose_vec[i].q.w() << " " << pose_vec[i].q.x() << " "
+      //      << pose_vec[i].q.y() << " " << pose_vec[i].q.z();
+      // if(i < pose_vec.size()-1) file << "\n";
+
+    lio_path_file.setf(std::ios::fixed, std::ios::floatfield);
+    lio_path_file.precision(2);
+    lio_path_file << st_pose[i] << " ";
+    lio_path_file.precision(5);
+
+    lio_path_file
+        << pose_vec[i].t(0) << " "
+        << pose_vec[i].t(1) << " "
+        << pose_vec[i].t(2) << " "
+        << pose_vec[i].q.x() << " "
+        << pose_vec[i].q.y() << " "
+        << pose_vec[i].q.z() << " "
+        << pose_vec[i].q.w() << std::endl;
     }
     file.close();
+    lio_path_file.close();
   }
 
   void writeEVOPose(std::vector<double>& lidar_times, std::vector<pose>& pose_vec, std::string path)

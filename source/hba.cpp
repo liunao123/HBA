@@ -28,7 +28,7 @@
 using namespace std;
 using namespace Eigen;
 
-int pcd_name_fill_num = 0;
+int pcd_name_fill_num = 6;
 
 void cut_voxel(unordered_map<VOXEL_LOC, OCTO_TREE_ROOT*>& feat_map,
                 pcl::PointCloud<PointType>& feat_pt,
@@ -105,7 +105,7 @@ void parallel_comp(LAYER& layer, int thread_id, LAYER& next_layer)
           if(loop == 0)
           {
             pcl::PointCloud<PointType>::Ptr pc(new pcl::PointCloud<PointType>);
-            mypcl::loadPCD(layer.data_path, pcd_name_fill_num, pc, j, "pcd/");
+            mypcl::loadPCD(layer.data_path + "pose_graph/", pcd_name_fill_num, pc, j);
             raw_pc[j-i*GAP] = pc;
           }
           src_pc[j-i*GAP] = (*raw_pc[j-i*GAP]).makeShared();
@@ -210,7 +210,7 @@ void parallel_tail(LAYER& layer, int thread_id, LAYER& next_layer)
           if(loop == 0)
           {
             pcl::PointCloud<PointType>::Ptr pc(new pcl::PointCloud<PointType>);
-            mypcl::loadPCD(layer.data_path, pcd_name_fill_num, pc, j, "pcd/");
+            mypcl::loadPCD(layer.data_path + "pose_graph/", pcd_name_fill_num, pc, j );
             raw_pc[j-i*GAP] = pc;
           }
           src_pc[j-i*GAP] = (*raw_pc[j-i*GAP]).makeShared();
@@ -320,7 +320,7 @@ void parallel_tail(LAYER& layer, int thread_id, LAYER& next_layer)
           if(loop == 0)
           {
             pcl::PointCloud<PointType>::Ptr pc(new pcl::PointCloud<PointType>);
-            mypcl::loadPCD(layer.data_path, pcd_name_fill_num, pc, j, "pcd/");
+            mypcl::loadPCD(layer.data_path + "pose_graph/", pcd_name_fill_num, pc, j );
             raw_pc[j-i*GAP] = pc;
           }
           src_pc[j-i*GAP] = (*raw_pc[j-i*GAP]).makeShared();          
@@ -417,7 +417,7 @@ void global_ba(LAYER& layer)
       dsp_t += ros::Time::now().toSec() - t0;
       t0 = ros::Time::now().toSec();
       cut_voxel(surf_map, *src_pc[i], Quaterniond(x_buf[i].R), x_buf[i].p, i,
-                layer.voxel_size, window_size, layer.eigen_ratio*2);
+                layer.voxel_size, window_size, layer.eigen_ratio );
       cut_t += ros::Time::now().toSec() - t0;
     }
     t0 = ros::Time::now().toSec();

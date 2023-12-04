@@ -40,9 +40,9 @@ public:
     pose_size = 0;
     layer_num = 1;
     max_iter = 10;
-    downsample_size = 0.1;
-    voxel_size = 4.0;
-    eigen_ratio = 0.1;
+    downsample_size = 0.05;
+    voxel_size = 3.0;
+    eigen_ratio = 0.05;
     reject_ratio = 0.05;
     pose_vec.clear(); mthreads.clear(); pcds.clear();
     hessians.clear(); mem_costs.clear();
@@ -141,7 +141,28 @@ public:
       layers[i].thread_num = thread_num;
     }
     layers[0].data_path = data_path;
-    layers[0].pose_vec = mypcl::read_pose(data_path + "pose.json");
+    // layers[0].pose_vec = mypcl::read_pose(data_path + "pose.json");
+    
+    std::ifstream file_HBA( data_path + "HBA_pose.txt" );
+    std::ifstream file_GTSAM( data_path + "GTSAM_pose.txt" );
+    if ( file_HBA.good() )
+    {
+      layers[0].pose_vec = mypcl::read_pose(data_path + "HBA_pose.txt");
+      ROS_WARN("read %sHBA_pose.txt", data_path.c_str());
+    }
+    else if(file_GTSAM.good())
+    {
+      layers[0].pose_vec = mypcl::read_pose(data_path + "GTSAM_pose.txt");
+      ROS_WARN("read %sGTSAM_pose.txt", data_path.c_str());
+    }
+    else
+    {
+      layers[0].pose_vec = mypcl::read_pose(data_path + "key_pose.txt");
+      ROS_WARN("read %skey_pose.txt", data_path.c_str());
+    }
+    
+    // layers[0].pose_vec = mypcl::read_pose(data_path + "key_pose.txt");
+    // std::cout << __FILE__ <<":" << __LINE__  << " " << data_path + "key_pose.txt" <<  std::endl;
     layers[0].init_parameter();
     layers[0].init_storage(total_layer_num);
 

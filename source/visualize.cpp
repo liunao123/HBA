@@ -42,20 +42,44 @@ int main(int argc, char** argv)
   ros::Publisher pub_pose = nh.advertise<geometry_msgs::PoseArray>("/poseArrayTopic", 10);
   ros::Publisher pub_trajectory = nh.advertise<visualization_msgs::Marker>("/trajectory_marker", 100);
   ros::Publisher pub_pose_number = nh.advertise<visualization_msgs::MarkerArray>("/pose_number", 100);
+  
+  ros::Publisher pubLidarPose = nh.advertise<geometry_msgs::PoseStamped>("/lidar_pose", 10);
+  ros::Publisher pubSurfPoint = nh.advertise<sensor_msgs::PointCloud2>("/livox_surf_point", 10);
 
   string file_path;
   double downsample_size, marker_size;
-  int pcd_name_fill_num;
+  int pcd_name_fill_num = 6;
+  bool pub_scan_and_pose = false;
 
   nh.getParam("file_path", file_path);
   nh.getParam("downsample_size", downsample_size);
   nh.getParam("pcd_name_fill_num", pcd_name_fill_num);
   nh.getParam("marker_size", marker_size);
+  nh.getParam("pub_scan_and_pose", pub_scan_and_pose);
 
   sensor_msgs::PointCloud2 debugMsg, cloudMsg, outMsg;
   vector<mypcl::pose> pose_vec;
 
-  pose_vec = mypcl::read_pose(file_path + "pose.json");
+  std::ifstream file_HBA( file_path + "HBA_pose.txt" );
+  std::ifstream file_GTSAM( file_path + "GTSAM_pose.txt" );
+  if ( file_HBA.good() )
+  {
+    pose_vec = mypcl::read_pose(file_path + "HBA_pose.txt");
+    ROS_WARN("read %sHBA_pose.txt", file_path.c_str());
+  }
+  else if(file_GTSAM.good())
+  {
+    pose_vec = mypcl::read_pose(file_path + "GTSAM_pose.txt");
+    ROS_WARN("read %sGTSAM_pose.txt", file_path.c_str());
+  }
+  else
+  {
+    pose_vec = mypcl::read_pose(file_path + "key_pose.txt");
+    ROS_WARN("read %skey_pose.txt", file_path.c_str());
+  }
+  
+  std::vector<double> st_pose = mypcl::get_pose_stamp();
+
   size_t pose_size = pose_vec.size();
   cout<<"pose size "<<pose_size<<endl;
 
@@ -68,11 +92,13 @@ int main(int argc, char** argv)
   parray.header.stamp = cur_t;
   visualization_msgs::MarkerArray markerArray;
 
-  cout<<"push enter to view"<<endl;
-  getchar();
+  // cout<<"push enter to view"<<endl;
+  // getchar();
+  usleep(3000*1000);
+  
   for(size_t i = 0; i < pose_size; i++)
   {
-    mypcl::loadPCD(file_path + "pcd/", pcd_name_fill_num, pc_surf, i);
+    mypcl::loadPCD(file_path + "pose_graph/", pcd_name_fill_num, pc_surf, i );
 
     pcl::PointCloud<PointType>::Ptr pc_filtered(new pcl::PointCloud<PointType>);
     pc_filtered->resize(pc_surf->points.size());
@@ -103,6 +129,23 @@ int main(int argc, char** argv)
     parray.poses.push_back(apose);
     pub_pose.publish(parray);
 
+    if (pub_scan_and_pose)
+    {
+      ROS_WARN_ONCE(" pub_scan_and_pose ");
+      geometry_msgs::PoseStamped pst;
+      pst.header.stamp = ros::Time().fromSec(st_pose[i]);
+      pst.pose = apose;
+      pubLidarPose.publish(pst);
+
+      pcl::toROSMsg(*pc_surf, cloudMsg);
+      cloudMsg.header.stamp = ros::Time().fromSec(st_pose[i]);
+      pubSurfPoint.publish(cloudMsg);
+    }
+    else
+    {
+      ROS_WARN_ONCE(" NOT pub_scan_and_pose ");
+    }
+
     // static tf::TransformBroadcaster br;
     // tf::Transform transform;
     // transform.setOrigin(tf::Vector3(pose_vec[i].t(0), pose_vec[i].t(1), pose_vec[i].t(2)));
@@ -117,6 +160,8 @@ int main(int argc, char** argv)
     marker.ns = "basic_shapes";
     marker.id = i;
     marker.type = visualization_msgs::Marker::SPHERE;
+    marker.type = visualization_msgs::Marker::TEXT_VIEW_FACING;
+    marker.text = std::to_string(i) + "_" + std::to_string( st_pose[i] ).c_str()  ;
     marker.pose.position.x = pose_vec[i].t(0);
     marker.pose.position.y = pose_vec[i].t(1);
     marker.pose.position.z = pose_vec[i].t(2);
