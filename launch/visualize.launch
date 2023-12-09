@@ -1,11 +1,13 @@
 <launch>
   <node pkg="hba" type="visualize_map" name="visualize_map" output="screen">
-    <param name="file_path" type="string" value="/home/map/region1-1111/"/>
+    <param name="file_path" type="string" value="/home/map/region5-5/"/>
     <param name="downsample_size" type="double" value="0.1"/>
     <param name="marker_size" type="double" value="0.5"/>
     <param name="downsample_size" type="double" value="0.1"/>
 
-    <param name="pub_scan_and_pose" type="bool" value="false"/>
+    <param name="save_global_map" type="bool" value="true"/>
+    
+    <param name="pub_step" type="int" value="1"/>
     
     <param name="pcd_name_fill_num" type="int" value="6"/> <!--set 5 for kitti07 and 0 for park-->
   </node>
