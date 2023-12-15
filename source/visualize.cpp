@@ -10,6 +10,8 @@
 #include <pcl/filters/passthrough.h>
 #include <pcl_conversions/pcl_conversions.h>
 #include <pcl/filters/statistical_outlier_removal.h>
+#include <pcl/filters/radius_outlier_removal.h>
+#include <pcl/filters/crop_box.h>
 
 #include <sensor_msgs/PointCloud2.h>
 #include <geometry_msgs/PoseArray.h>
@@ -28,14 +30,40 @@
 #include "ba.hpp"
 #include "tools.hpp"
 #include "mypcl.hpp"
+#include <thread>
 
 using namespace std;
 using namespace Eigen;
+
+bool stop = false;
+bool exit_flag = false;
+
+int threadFunction()
+{
+    while (true)
+    {
+        // std::cout << "按下 Enter 键暂停循环，再次按下 Enter 键继续，或输入 'q' 退出：" << std::endl;
+        int c = getchar();
+        if (c == '\n')
+        {
+          stop = !stop;
+          std::cout << "stop is " << stop << std::endl;
+        }
+        if ( c == ' ' || exit_flag )
+        {
+          std::cout << "break exit() " << std::endl;
+          break;
+        }
+    }
+}
 
 int main(int argc, char** argv)
 {
   ros::init(argc, argv, "visualize");
   ros::NodeHandle nh("~");
+
+  std::thread myThread(threadFunction);
+  myThread.detach();
 
   ros::Publisher pub_map = nh.advertise<sensor_msgs::PointCloud2>("/cloud_map", 100);
   ros::Publisher pub_debug = nh.advertise<sensor_msgs::PointCloud2>("/cloud_debug", 100);
@@ -49,12 +77,16 @@ int main(int argc, char** argv)
   string file_path;
   double downsample_size, marker_size;
   int pcd_name_fill_num = 6;
+  int pcd_start_index = 0;
+  int pcd_end_index = 0;
   bool save_global_map = false;
   int pub_step = 2;
 
   nh.getParam("file_path", file_path);
   nh.getParam("downsample_size", downsample_size);
   nh.getParam("pcd_name_fill_num", pcd_name_fill_num);
+  nh.getParam("pcd_start_index", pcd_start_index);
+  
   nh.getParam("marker_size", marker_size);
   nh.getParam("save_global_map", save_global_map);
   nh.getParam("pub_step", pub_step);
@@ -86,6 +118,12 @@ int main(int argc, char** argv)
 
   size_t pose_size = pose_vec.size();
   cout<<"pose size "<<pose_size<<endl;
+  nh.getParam("pcd_end_index", pcd_end_index);
+
+  if(pcd_end_index > pose_size)
+    pcd_end_index = pose_size;
+
+  cout<<"pcd_end_index "<< pcd_end_index <<endl;
 
   pcl::PointCloud<PointType>::Ptr pc_surf(new pcl::PointCloud<PointType>);
   pcl::PointCloud<pcl::PointXYZRGB>::Ptr color_full(new pcl::PointCloud<pcl::PointXYZRGB>);
@@ -99,10 +137,22 @@ int main(int argc, char** argv)
   // cout<<"push enter to view"<<endl;
   // getchar();
   usleep(3000*1000);
-  pcl::PointCloud<PointType>  global_map ;
-  
-  for(size_t i = 0; i < pose_size; i++)
+  pcl::PointCloud<PointType> global_map;
+
+  float range = 2.0;
+  pcl::CropBox<PointType> cropBoxFilter_temp(true);
+  pcl::RadiusOutlierRemoval<PointType> outrem;
+  outrem.setRadiusSearch(0.2);
+  outrem.setMinNeighborsInRadius(10);
+
+  for(size_t i = pcd_start_index; i < pcd_end_index ; i++)
   {
+    if ( stop )
+    {
+      i--;
+      continue;
+    }
+    
     // 只使用部分帧
     if ( i % pub_step )
     {
@@ -113,14 +163,17 @@ int main(int argc, char** argv)
 
     pcl::PointCloud<PointType>::Ptr pc_filtered(new pcl::PointCloud<PointType>);
     pc_filtered->resize(pc_surf->points.size());
-    int cnt = 0;
-    for(size_t j = 0; j < pc_surf->points.size(); j++)
-    {
-      pc_filtered->points[cnt] = pc_surf->points[j];
-      cnt++;
-    }
-    pc_filtered->resize(cnt);
-    
+  
+    cropBoxFilter_temp.setMin(Eigen::Vector4f(-range, -range, -range, 1.0f));
+    cropBoxFilter_temp.setMax(Eigen::Vector4f(range, range, range, 1.0f));
+    cropBoxFilter_temp.setNegative(true);
+    cropBoxFilter_temp.setInputCloud(pc_surf);
+    cropBoxFilter_temp.filter(*pc_filtered);
+
+    outrem.setInputCloud(pc_filtered);
+    // apply filter
+    outrem.filter(*pc_filtered);
+
     mypcl::transform_pointcloud(*pc_filtered, *pc_filtered, pose_vec[i].t, pose_vec[i].q);
 
     if(save_global_map)
@@ -223,8 +276,9 @@ int main(int argc, char** argv)
 
   if( save_global_map && global_map.size() )
   {
-    ROS_WARN("save map:");
+    ROS_WARN("save map: %d ", global_map.size() );
     pcl::io::savePCDFile( file_path +"global_map.pcd", global_map);
+    ROS_WARN("save map end:");
   }
 
   ros::Rate loop_rate(1);
@@ -233,4 +287,5 @@ int main(int argc, char** argv)
     ros::spinOnce();
     loop_rate.sleep();
   }
+  exit_flag = true;
 }

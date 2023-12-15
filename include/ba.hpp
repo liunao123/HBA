@@ -12,8 +12,8 @@
 
 #include "tools.hpp"
 
-#define WIN_SIZE 10
-#define GAP 6
+#define WIN_SIZE 20
+#define GAP 10
 #define AVG_THR
 #define FULL_HESS
 #define ENABLE_RVIZ
