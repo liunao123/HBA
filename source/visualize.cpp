@@ -42,6 +42,11 @@ int threadFunction()
 {
     while (true)
     {
+        if ( exit_flag )
+        {
+          break;
+        }
+
         // std::cout << "按下 Enter 键暂停循环，再次按下 Enter 键继续，或输入 'q' 退出：" << std::endl;
         int c = getchar();
         if (c == '\n')
@@ -49,7 +54,7 @@ int threadFunction()
           stop = !stop;
           std::cout << "stop is " << stop << std::endl;
         }
-        if ( c == ' ' || exit_flag )
+        if ( c == ' ')
         {
           std::cout << "break exit() " << std::endl;
           break;
@@ -98,6 +103,7 @@ int main(int argc, char** argv)
 
   std::ifstream file_HBA( file_path + "HBA_pose.txt" );
   std::ifstream file_GTSAM( file_path + "GTSAM_pose.txt" );
+  std::ifstream file_key_pose( file_path + "key_pose.txt" );
   if ( file_HBA.good() )
   {
     pose_vec = mypcl::read_pose(file_path + "HBA_pose.txt");
@@ -108,10 +114,15 @@ int main(int argc, char** argv)
     pose_vec = mypcl::read_pose(file_path + "GTSAM_pose.txt");
     ROS_WARN("read %sGTSAM_pose.txt", file_path.c_str());
   }
-  else
+  else if(file_key_pose.good())
   {
     pose_vec = mypcl::read_pose(file_path + "key_pose.txt");
     ROS_WARN("read %skey_pose.txt", file_path.c_str());
+  }
+  else
+  {
+    ROS_WARN(" can not read pose file . return 0 " );
+    return -1;
   }
   
   std::vector<double> st_pose = mypcl::get_pose_stamp();
@@ -139,11 +150,11 @@ int main(int argc, char** argv)
   usleep(3000*1000);
   pcl::PointCloud<PointType> global_map;
 
-  float range = 2.0;
+  float range = 5.0;
   pcl::CropBox<PointType> cropBoxFilter_temp(true);
   pcl::RadiusOutlierRemoval<PointType> outrem;
   outrem.setRadiusSearch(0.2);
-  outrem.setMinNeighborsInRadius(10);
+  outrem.setMinNeighborsInRadius(1);
 
   for(size_t i = pcd_start_index; i < pcd_end_index ; i++)
   {
@@ -159,6 +170,8 @@ int main(int argc, char** argv)
       continue;
     }
 
+
+
     mypcl::loadPCD(file_path + "pose_graph/", pcd_name_fill_num, pc_surf, i );
 
     pcl::PointCloud<PointType>::Ptr pc_filtered(new pcl::PointCloud<PointType>);
@@ -170,9 +183,9 @@ int main(int argc, char** argv)
     cropBoxFilter_temp.setInputCloud(pc_surf);
     cropBoxFilter_temp.filter(*pc_filtered);
 
-    outrem.setInputCloud(pc_filtered);
-    // apply filter
-    outrem.filter(*pc_filtered);
+    // outrem.setInputCloud(pc_filtered);
+    // // apply filter
+    // outrem.filter(*pc_filtered);
 
     mypcl::transform_pointcloud(*pc_filtered, *pc_filtered, pose_vec[i].t, pose_vec[i].q);
 
@@ -278,6 +291,13 @@ int main(int argc, char** argv)
   {
     ROS_WARN("save map: %d ", global_map.size() );
     pcl::io::savePCDFile( file_path +"global_map.pcd", global_map);
+    ROS_WARN("save map end:");
+    downsample_voxel(global_map, 0.05);
+    ROS_WARN("downsample_voxel save map: %d ", global_map.size() );
+    pcl::io::savePCDFile( file_path +"global_map_5cm.pcd", global_map);
+    downsample_voxel(global_map, 0.1);
+    ROS_WARN("downsample_voxel save map: %d ", global_map.size() );
+    pcl::io::savePCDFile( file_path +"global_map_10cm.pcd", global_map);
     ROS_WARN("save map end:");
   }
 

@@ -258,11 +258,11 @@ Visualization Manager:
       Topic: /aft_mapped_path
       Unreliable: false
       Value: false
-    - Alpha: 0.20000000298023224
+    - Alpha: 1
       Autocompute Intensity Bounds: true
       Autocompute Value Bounds:
-        Max Value: 11.701202392578125
-        Min Value: 0.17782863974571228
+        Max Value: 11.324331283569336
+        Min Value: -1.520597219467163
         Value: true
       Axis: Z
       Channel Name: intensity
@@ -538,25 +538,25 @@ Visualization Manager:
   Views:
     Current:
       Class: rviz/ThirdPersonFollower
-      Distance: 27.529863357543945
+      Distance: 268.500732421875
       Enable Stereo Rendering:
         Stereo Eye Separation: 0.05999999865889549
         Stereo Focal Distance: 1
         Swap Stereo Eyes: false
         Value: false
       Focal Point:
-        X: 29.34051513671875
-        Y: 71.40894317626953
-        Z: -2.3505932404077612e-5
+        X: 4.030901908874512
+        Y: 61.12017822265625
+        Z: -2.5202434699167497e-5
       Focal Shape Fixed Size: true
       Focal Shape Size: 0.05000000074505806
       Invert Z Axis: false
       Name: Current View
       Near Clip Distance: 0.009999999776482582
-      Pitch: 1.2347966432571411
+      Pitch: 1.4997963905334473
       Target Frame: turtle_name
       Value: ThirdPersonFollower (rviz)
-      Yaw: 6.1531219482421875
+      Yaw: 4.198106288909912
     Saved:
       - Class: rviz/Orbit
         Distance: 9.899999618530273
