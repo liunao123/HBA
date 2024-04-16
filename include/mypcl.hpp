@@ -97,8 +97,41 @@ namespace mypcl
     return pose_vec;
   }
 
-  void transform_pointcloud(pcl::PointCloud<PointType> const& pc_in,
-                            pcl::PointCloud<PointType>& pt_out,
+  std::vector<pose> readPosesFromG2O(const std::string &filename)
+  {
+    std::ifstream file(filename);
+    if (!file)
+    {
+      std::cerr << "Error opening file: " << filename << std::endl;
+      return std::vector<pose>();
+    }
+    std::vector<pose> poses;
+    std::string line;
+    while (std::getline(file, line))
+    {
+      std::istringstream iss(line);
+      std::string tag;
+      iss >> tag;
+      if (tag == "VERTEX_SE3:QUAT")
+      {
+        double tx, ty, tz, w, x, y, z;
+        int id;
+        iss >> id >> tx >> ty >> tz >> x >> y >> z >> w;
+        Eigen::Quaterniond q(w, x, y, z);
+        Eigen::Vector3d t(tx, ty, tz);
+        // std::cout << ": " << x << ": " << y << ": " << z << ": " << w << std::endl;
+        poses.push_back(pose( q , t  ));
+        st_pose.push_back( id ); 
+      }
+      
+    }
+    std::cerr << "pose end "  << std::endl;
+
+    return poses;
+  }
+
+  void transform_pointcloud(pcl::PointCloud<PointType> const &pc_in,
+                            pcl::PointCloud<PointType> &pt_out,
                             Eigen::Vector3d t,
                             Eigen::Quaterniond q)
   {

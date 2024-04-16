@@ -145,6 +145,7 @@ public:
     
     std::ifstream file_HBA( data_path + "HBA_pose.txt" );
     std::ifstream file_GTSAM( data_path + "GTSAM_pose.txt" );
+    std::ifstream file_key_pose( data_path + "key_pose.txt" );
     if ( file_HBA.good() )
     {
       layers[0].pose_vec = mypcl::read_pose(data_path + "HBA_pose.txt");
@@ -155,10 +156,14 @@ public:
       layers[0].pose_vec = mypcl::read_pose(data_path + "GTSAM_pose.txt");
       ROS_WARN("read %sGTSAM_pose.txt", data_path.c_str());
     }
-    else
+    else if(file_key_pose.good())
     {
       layers[0].pose_vec = mypcl::read_pose(data_path + "key_pose.txt");
       ROS_WARN("read %skey_pose.txt", data_path.c_str());
+    } else
+    {
+      ROS_WARN(" can not read pose file . try to read %spose_graph/graph.g2o ", data_path.c_str());
+      layers[0].pose_vec = mypcl::readPosesFromG2O(data_path + "pose_graph/graph.g2o");
     }
     
     // layers[0].pose_vec = mypcl::read_pose(data_path + "key_pose.txt");

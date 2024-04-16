@@ -79,7 +79,7 @@ int main(int argc, char** argv)
   ros::Publisher pubLidarPose = nh.advertise<geometry_msgs::PoseStamped>("/pose_offline", 10);
   ros::Publisher pubSurfPoint = nh.advertise<sensor_msgs::PointCloud2>("/points_offline", 10);
 
-  string file_path;
+  string data_path;
   double downsample_size, marker_size;
   int pcd_name_fill_num = 6;
   int pcd_start_index = 0;
@@ -87,7 +87,7 @@ int main(int argc, char** argv)
   bool save_global_map = false;
   int pub_step = 2;
 
-  nh.getParam("file_path", file_path);
+  nh.getParam("data_path", data_path);
   nh.getParam("downsample_size", downsample_size);
   nh.getParam("pcd_name_fill_num", pcd_name_fill_num);
   nh.getParam("pcd_start_index", pcd_start_index);
@@ -101,28 +101,29 @@ int main(int argc, char** argv)
   sensor_msgs::PointCloud2 debugMsg, cloudMsg, outMsg;
   vector<mypcl::pose> pose_vec;
 
-  std::ifstream file_HBA( file_path + "HBA_pose.txt" );
-  std::ifstream file_GTSAM( file_path + "GTSAM_pose.txt" );
-  std::ifstream file_key_pose( file_path + "key_pose.txt" );
+  std::ifstream file_HBA( data_path + "HBA_pose.txt" );
+  std::ifstream file_GTSAM( data_path + "GTSAM_pose.txt" );
+  std::ifstream file_key_pose( data_path + "key_pose.txt" );
   if ( file_HBA.good() )
   {
-    pose_vec = mypcl::read_pose(file_path + "HBA_pose.txt");
-    ROS_WARN("read %sHBA_pose.txt", file_path.c_str());
+    pose_vec = mypcl::read_pose(data_path + "HBA_pose.txt");
+    ROS_WARN("read %sHBA_pose.txt", data_path.c_str());
   }
   else if(file_GTSAM.good())
   {
-    pose_vec = mypcl::read_pose(file_path + "GTSAM_pose.txt");
-    ROS_WARN("read %sGTSAM_pose.txt", file_path.c_str());
+    pose_vec = mypcl::read_pose(data_path + "GTSAM_pose.txt");
+    ROS_WARN("read %sGTSAM_pose.txt", data_path.c_str());
   }
   else if(file_key_pose.good())
   {
-    pose_vec = mypcl::read_pose(file_path + "key_pose.txt");
-    ROS_WARN("read %skey_pose.txt", file_path.c_str());
+    pose_vec = mypcl::read_pose(data_path + "key_pose.txt");
+    ROS_WARN("read %skey_pose.txt", data_path.c_str());
   }
   else
   {
-    ROS_WARN(" can not read pose file . return 0 " );
-    return -1;
+    ROS_WARN(" can not read pose file . try to read %spose_graph/graph.g2o " , data_path.c_str() );
+    pose_vec = mypcl::readPosesFromG2O(data_path + "pose_graph/graph.g2o");
+    // return -1;
   }
   
   std::vector<double> st_pose = mypcl::get_pose_stamp();
@@ -150,7 +151,7 @@ int main(int argc, char** argv)
   usleep(3000*1000);
   pcl::PointCloud<PointType> global_map;
 
-  float range = 5.0;
+  float range = 2.0;
   pcl::CropBox<PointType> cropBoxFilter_temp(true);
   pcl::RadiusOutlierRemoval<PointType> outrem;
   outrem.setRadiusSearch(0.2);
@@ -169,10 +170,26 @@ int main(int argc, char** argv)
     {
       continue;
     }
+    if ( i % 10 == 0 )
+    {
+      ROS_WARN("read %dth file. ", i );
+    }
+
+    // if( i > 2050  && i < 2180 ) continue;
+    // if( i > 3020  && i < 3090 ) continue;
+    // if( i > 3930  && i < 4140 ) continue;
+    // if( i > 5000  && i < 5130 ) continue;
+    // if( i > 6000  && i < 6130 ) continue;
+    // if( i > 6950  && i < 7000 ) continue;
+    // if( i > 7800 ) continue;
 
 
+    // if( i > 4500  && i < 4800 ) continue;
+    // if( i > 5530  && i < 5600 ) continue;
+    // if( i > 6500  && i < 6600 ) continue;
+    // if( i > 7400  && i < 7500 ) continue;
 
-    mypcl::loadPCD(file_path + "pose_graph/", pcd_name_fill_num, pc_surf, i );
+    mypcl::loadPCD(data_path + "pose_graph/", pcd_name_fill_num, pc_surf, i );
 
     pcl::PointCloud<PointType>::Ptr pc_filtered(new pcl::PointCloud<PointType>);
     pc_filtered->resize(pc_surf->points.size());
@@ -235,7 +252,7 @@ int main(int argc, char** argv)
     marker.id = i;
     marker.type = visualization_msgs::Marker::SPHERE;
     // marker.type = visualization_msgs::Marker::TEXT_VIEW_FACING;
-    marker.text = std::to_string(i) + "_" + std::to_string( st_pose[i] ).c_str()  ;
+    marker.text = (std::to_string(i) + "_" + std::to_string( st_pose[i] ) ).c_str();
     marker.pose.position.x = pose_vec[i].t(0);
     marker.pose.position.y = pose_vec[i].t(1);
     marker.pose.position.z = pose_vec[i].t(2);
@@ -269,9 +286,9 @@ int main(int argc, char** argv)
     marker_txt.pose.position.x = pose_vec[i].t(0)+marker_size;
     marker_txt.pose.position.y = pose_vec[i].t(1)+marker_size;
     marker_txt.pose.position.z = pose_vec[i].t(2);
-    marker_txt.pose.orientation.x = pose_vec[i].q.x();
-    marker_txt.pose.orientation.y = pose_vec[i].q.y();
-    marker_txt.pose.orientation.z = pose_vec[i].q.x();
+    marker_txt.pose.orientation.x = 0; pose_vec[i].q.x();
+    marker_txt.pose.orientation.y = 0; pose_vec[i].q.y();
+    marker_txt.pose.orientation.z = 0; pose_vec[i].q.x();
     marker_txt.pose.orientation.w = 1.0;
     marker_txt.scale.x = marker_size;
     marker_txt.scale.y = marker_size;
@@ -286,18 +303,19 @@ int main(int argc, char** argv)
 
     ros::Duration(0.001).sleep();
   }
+  ROS_WARN("pub end:");
 
   if( save_global_map && global_map.size() )
   {
     ROS_WARN("save map: %d ", global_map.size() );
-    pcl::io::savePCDFile( file_path +"global_map.pcd", global_map);
+    pcl::io::savePCDFile( data_path +"global_map.pcd", global_map);
     ROS_WARN("save map end:");
     downsample_voxel(global_map, 0.05);
     ROS_WARN("downsample_voxel save map: %d ", global_map.size() );
-    pcl::io::savePCDFile( file_path +"global_map_5cm.pcd", global_map);
+    pcl::io::savePCDFile( data_path +"global_map_5cm.pcd", global_map);
     downsample_voxel(global_map, 0.1);
     ROS_WARN("downsample_voxel save map: %d ", global_map.size() );
-    pcl::io::savePCDFile( file_path +"global_map_10cm.pcd", global_map);
+    pcl::io::savePCDFile( data_path +"global_map_10cm.pcd", global_map);
     ROS_WARN("save map end:");
   }
 
