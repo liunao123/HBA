@@ -13,8 +13,8 @@
 typedef std::vector<Eigen::Vector3d, Eigen::aligned_allocator<Eigen::Vector3d> > vector_vec3d;
 typedef std::vector<Eigen::Quaterniond, Eigen::aligned_allocator<Eigen::Quaterniond> > vector_quad;
 // typedef pcl::PointXYZINormal PointType;
-typedef pcl::PointXYZ PointType;
-// typedef pcl::PointXYZI PointType;
+// typedef pcl::PointXYZ PointType;
+typedef pcl::PointXYZRGB PointType;
 typedef Eigen::Matrix<double, 6, 6> Matrix6d;
 std::vector<double> st_pose;
 
@@ -146,9 +146,9 @@ namespace mypcl
       pt_out.points[i].x = pt_to.x();
       pt_out.points[i].y = pt_to.y();
       pt_out.points[i].z = pt_to.z();
-      // pt_out.points[i].r = pc_in.points[i].r;
-      // pt_out.points[i].g = pc_in.points[i].g;
-      // pt_out.points[i].b = pc_in.points[i].b;
+      pt_out.points[i].r = pc_in.points[i].r;
+      pt_out.points[i].g = pc_in.points[i].g;
+      pt_out.points[i].b = pc_in.points[i].b;
     }
   }
 
@@ -171,24 +171,24 @@ namespace mypcl
     return pc1;
   }
 
-  pcl::PointCloud<PointType>::Ptr append_cloud(pcl::PointCloud<PointType>::Ptr pc1,
-                                               pcl::PointCloud<PointType> pc2)
-  {
-    size_t size1 = pc1->points.size();
-    size_t size2 = pc2.points.size();
-    pc1->points.resize(size1 + size2);
-    for(size_t i = size1; i < size1 + size2; i++)
-    {
-      pc1->points[i].x = pc2.points[i-size1].x;
-      pc1->points[i].y = pc2.points[i-size1].y;
-      pc1->points[i].z = pc2.points[i-size1].z;
-      // pc1->points[i].r = pc2.points[i-size1].r;
-      // pc1->points[i].g = pc2.points[i-size1].g;
-      // pc1->points[i].b = pc2.points[i-size1].b;
-      // pc1->points[i].intensity = pc2.points[i-size1].intensity;
-    }
-    return pc1;
-  }
+  // pcl::PointCloud<PointType>::Ptr append_cloud(pcl::PointCloud<PointType>::Ptr pc1,
+  //                                              pcl::PointCloud<PointType> pc2)
+  // {
+  //   size_t size1 = pc1->points.size();
+  //   size_t size2 = pc2.points.size();
+  //   pc1->points.resize(size1 + size2);
+  //   for(size_t i = size1; i < size1 + size2; i++)
+  //   {
+  //     pc1->points[i].x = pc2.points[i-size1].x;
+  //     pc1->points[i].y = pc2.points[i-size1].y;
+  //     pc1->points[i].z = pc2.points[i-size1].z;
+  //     // pc1->points[i].r = pc2.points[i-size1].r;
+  //     // pc1->points[i].g = pc2.points[i-size1].g;
+  //     // pc1->points[i].b = pc2.points[i-size1].b;
+  //     // pc1->points[i].intensity = pc2.points[i-size1].intensity;
+  //   }
+  //   return pc1;
+  // }
 
   double compute_inlier_ratio(std::vector<double> residuals, double ratio)
   {
@@ -203,11 +203,11 @@ namespace mypcl
   void write_pose(std::vector<pose>& pose_vec, std::string path)
   {
     std::ofstream file;
-    file.open(path + "pose.json", std::ofstream::trunc);
+    // file.open(path + "pose.json", std::ofstream::trunc);
     file.close();
     Eigen::Quaterniond q0(pose_vec[0].q.w(), pose_vec[0].q.x(), pose_vec[0].q.y(), pose_vec[0].q.z());
     Eigen::Vector3d t0(pose_vec[0].t(0), pose_vec[0].t(1), pose_vec[0].t(2));
-    file.open(path + "pose.json", std::ofstream::app);
+    // file.open(path + "pose.json", std::ofstream::app);
 
     std::ofstream lio_path_file;
     lio_path_file.open(path + "HBA_pose.txt", std::ofstream::trunc);

@@ -22,8 +22,8 @@
 #define NMATCH 5
 #define DVEL 6
 
-typedef pcl::PointXYZ PointType;
-// typedef pcl::PointXYZI PointType;
+// typedef pcl::PointXYZ PointType;
+typedef pcl::PointXYZRGB PointType;
 // typedef pcl::PointXYZINormal PointType;
 using namespace std;
 

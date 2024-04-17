@@ -203,7 +203,7 @@ int main(int argc, char** argv)
     // outrem.setInputCloud(pc_filtered);
     // // apply filter
     // outrem.filter(*pc_filtered);
-
+    // pose_vec[i].t(2) = 0;
     mypcl::transform_pointcloud(*pc_filtered, *pc_filtered, pose_vec[i].t, pose_vec[i].q);
 
     if(save_global_map)
@@ -211,7 +211,8 @@ int main(int argc, char** argv)
       global_map += *pc_filtered;
     }
 
-    downsample_voxel(*pc_filtered, downsample_size);
+    // 根据位置去网格化
+    // downsample_voxel(*pc_filtered, downsample_size);
 
     pcl::toROSMsg(*pc_filtered, cloudMsg);
     cloudMsg.header.frame_id = "camera_init";
