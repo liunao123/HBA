@@ -114,14 +114,13 @@ namespace mypcl
       iss >> tag;
       if (tag == "VERTEX_SE3:QUAT")
       {
-        double tx, ty, tz, w, x, y, z;
-        int id;
-        iss >> id >> tx >> ty >> tz >> x >> y >> z >> w;
+        double st, tx, ty, tz, w, x, y, z;
+        iss >> st >> tx >> ty >> tz >> x >> y >> z >> w;
         Eigen::Quaterniond q(w, x, y, z);
         Eigen::Vector3d t(tx, ty, tz);
         // std::cout << ": " << x << ": " << y << ": " << z << ": " << w << std::endl;
         poses.push_back(pose( q , t  ));
-        st_pose.push_back( id ); 
+        st_pose.push_back( st ); 
       }
       
     }

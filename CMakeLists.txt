@@ -21,6 +21,19 @@ find_package(catkin REQUIRED COMPONENTS
   tf
 )
 
+set(OpenCV_DIR /usr/local/share/OpenCV)
+find_package(catkin REQUIRED COMPONENTS
+  cv_bridge
+  pcl_conversions
+  pcl_ros
+  sensor_msgs
+  image_transport
+  message_generation
+  cmake_modules
+  dynamic_reconfigure
+)
+find_package(OpenCV REQUIRED)
+
 find_package(PCL REQUIRED)
 find_package(Eigen3 REQUIRED)
 find_package(GTSAM REQUIRED QUIET)
@@ -34,6 +47,7 @@ include_directories(
   ${catkin_INCLUDE_DIRS}
   ${PCL_INCLUDE_DIRS}
   ${GTSAM_INCLUDE_DIR}
+  ${OpenCV_INCLUDE_DIRS}
 )
 
 catkin_package(
@@ -42,9 +56,13 @@ catkin_package(
   INCLUDE_DIRS
 )
 
-# Hierarchical Bundle Adjustment
+# # Hierarchical Bundle Adjustment
 add_executable(hba source/hba.cpp)
 target_link_libraries(hba ${catkin_LIBRARIES} ${PCL_LIBRARIES} gtsam)
 
 add_executable(visualize_map source/visualize.cpp)
 target_link_libraries(visualize_map ${catkin_LIBRARIES} ${PCL_LIBRARIES})
+
+# reproject_pts_img with odometry
+add_executable(reproject_pts_img source/project.cpp)
+target_link_libraries(reproject_pts_img ${catkin_LIBRARIES}  ${OpenCV_LIBS})
