@@ -66,3 +66,6 @@ target_link_libraries(visualize_map ${catkin_LIBRARIES} ${PCL_LIBRARIES})
 # reproject_pts_img with odometry
 add_executable(reproject_pts_img source/project.cpp)
 target_link_libraries(reproject_pts_img ${catkin_LIBRARIES}  ${OpenCV_LIBS})
+
+add_executable(reproject_img_pts_with_pose source/reproject_img_pts.cpp)
+target_link_libraries(reproject_img_pts_with_pose ${catkin_LIBRARIES}  ${OpenCV_LIBS})
