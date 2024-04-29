@@ -14,11 +14,12 @@ namespace DetectandTract{
         nh.param<std::string>("pose_topic",i_params.pose_topic, "/lidar_pose" );
         nh.param< float >("rgb_map_size",rgb_map_size, 0.05 );
         nh.param<std::string>("data_path",data_path, "/home/map/rgb_test" );
+        nh.param< bool >("dense_map",dense_map, false );
 
         rgb_pts_cloud.reset(new PointCloudXYZRGB( ));
 
         ROS_ERROR("WARNING : after 10s will remove %s .", data_path.c_str());
-        ros::Duration(1).sleep();
+        ros::Duration(5).sleep();
         ROS_ERROR(" remove %s .", data_path.c_str());
         
         system(("rm -r " + data_path + "./*").c_str());
@@ -93,17 +94,17 @@ namespace DetectandTract{
 
         ROS_WARN("rgb points size %ld .", world_rgb_pts.points.size());
 
-        pcl::io::savePCDFile("/home/map/livo_rgbmap_original.pcd",  world_rgb_pts);
+        pcl::io::savePCDFile(data_path + "livo_rgbmap_original.pcd",  world_rgb_pts);
         pcl::VoxelGrid<PointTypeRGB> dsrgb1;
-        dsrgb1.setLeafSize(rgb_map_size*2, rgb_map_size*2, rgb_map_size*2);
+        dsrgb1.setLeafSize(rgb_map_size, rgb_map_size, rgb_map_size);
         dsrgb1.setInputCloud(world_rgb_pts.makeShared());
         dsrgb1.filter(world_rgb_pts);
         ROS_WARN("rgb points size %ld .",  world_rgb_pts.points.size());
 
-        pcl::io::savePCDFile("/home/map/livo_rgbmap.pcd",  world_rgb_pts);
+        pcl::io::savePCDFile(data_path + " livo_rgbmap.pcd",  world_rgb_pts);
         std::cout << "save rgb map done ......" << std::endl;
         res.success = true;
-        res.message = "rgb pcd file:  /home/map/livo_rgbmap.pcd and /home/map/livo_rgbmap_original.pcd ";
+        res.message = "rgb pcd file: " + data_path + " livo_rgbmap.pcd" ;
         return true;
     }
 
@@ -288,11 +289,15 @@ namespace DetectandTract{
         float delta_yaw = std::atan2(delta_pose(1, 0), delta_pose(0, 0));
         // std::cout << "d_trans  : " << delta_translation.norm() << std::endl;
         // std::cout << "d_yaw : " << delta_yaw << std::endl;
-        
-        if ( delta_translation.norm() < 0.1  && std::fabs(delta_yaw) < 0.1 && keyframe_cnts != 0 ) // 0.1m or 0.1rad
+
+        if (!dense_map)
         {
-            return;
+            if (delta_translation.norm() < 0.1 && std::fabs(delta_yaw) < 0.1 && keyframe_cnts != 0) // 0.1m or 0.1rad
+            {
+                return;
+            }
         }
+
         // 更新试上一次的位姿
         last_pose = transformMatrix_b2w;
 
@@ -321,10 +326,10 @@ namespace DetectandTract{
         pcl::transformPointCloud(*rgb_pts_cloud, scan_world, transformMatrix_b2w);
 
         // 放到一起再发出去
-        // world_rgb_pts += scan_world;
+        world_rgb_pts += scan_world;
         
-        world_rgb_pts.points.clear();
-        world_rgb_pts = scan_world;
+        // world_rgb_pts.points.clear();
+        // world_rgb_pts = scan_world;
 
         if (keyframe_cnts % 10 == 0)
         {
@@ -335,10 +340,11 @@ namespace DetectandTract{
             ROS_WARN("world rgb pts size: %ld .", world_rgb_pts.points.size());
         }
 
-            sensor_msgs::PointCloud2 wpts;
-            pcl::toROSMsg(world_rgb_pts, wpts);
-            wpts.header = pose_msg->header;
-            pubLaserCloudFullRes.publish(wpts); // Append the world-frame point cloud to the output.
+        sensor_msgs::PointCloud2 wpts;
+        // pcl::toROSMsg(world_rgb_pts, wpts);
+        pcl::toROSMsg(scan_world, wpts);
+        wpts.header = pose_msg->header;
+        pubLaserCloudFullRes.publish(wpts); // Append the world-frame point cloud to the output.
 
     }
 

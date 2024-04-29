@@ -25,7 +25,6 @@
 #include "ros/ros.h"
 #include <math.h>
 #include <rosbag/bag.h>
-#include <ceres/ceres.h>
 
 #include "ba.hpp"
 #include "tools.hpp"
@@ -138,17 +137,17 @@ int main(int argc, char** argv)
   cout<<"pcd_end_index "<< pcd_end_index <<endl;
 
   pcl::PointCloud<PointType>::Ptr pc_surf(new pcl::PointCloud<PointType>);
-  pcl::PointCloud<pcl::PointXYZRGB>::Ptr color_full(new pcl::PointCloud<pcl::PointXYZRGB>);
+  // pcl::PointCloud<pcl::PointXYZRGB>::Ptr color_full(new pcl::PointCloud<pcl::PointXYZRGB>);
 
   ros::Time cur_t;
   geometry_msgs::PoseArray parray;
-  parray.header.frame_id = "camera_init";
+  parray.header.frame_id = "odom";
   parray.header.stamp = cur_t;
   visualization_msgs::MarkerArray markerArray;
 
   // cout<<"push enter to view"<<endl;
   // getchar();
-  usleep(3000*1000);
+  usleep(5000*1000);
   pcl::PointCloud<PointType> global_map;
 
   float range = 2.0;
@@ -156,6 +155,10 @@ int main(int argc, char** argv)
   pcl::RadiusOutlierRemoval<PointType> outrem;
   outrem.setRadiusSearch(0.2);
   outrem.setMinNeighborsInRadius(1);
+
+  range = 150.0;
+  cropBoxFilter_temp.setMin(Eigen::Vector4f(-range, -range, -range, 1.0f));
+  cropBoxFilter_temp.setMax(Eigen::Vector4f(range, range, 50, 1.0f));
 
   for(size_t i = pcd_start_index; i < pcd_end_index ; i++)
   {
@@ -170,12 +173,14 @@ int main(int argc, char** argv)
     {
       continue;
     }
-    if ( i % 10 == 0 )
+
+    if ( i % 100 == 0 )
     {
-      ROS_WARN("read %dth file. ", i );
+      ROS_INFO("read %0.1f% , %ldth file , total %ld  . ", float(100.0*i / pcd_end_index) , i , pcd_end_index );
     }
 
-    // if( i > 2050  && i < 2180 ) continue;
+    // if( i > 1000  && i < 4000 ) continue;
+
     // if( i > 3020  && i < 3090 ) continue;
     // if( i > 3930  && i < 4140 ) continue;
     // if( i > 5000  && i < 5130 ) continue;
@@ -193,16 +198,15 @@ int main(int argc, char** argv)
 
     pcl::PointCloud<PointType>::Ptr pc_filtered(new pcl::PointCloud<PointType>);
     pc_filtered->resize(pc_surf->points.size());
-  
-    cropBoxFilter_temp.setMin(Eigen::Vector4f(-range, -range, -range, 1.0f));
-    cropBoxFilter_temp.setMax(Eigen::Vector4f(range, range, range, 1.0f));
-    cropBoxFilter_temp.setNegative(true);
+
+    // cropBoxFilter_temp.setNegative(true);  // 保留 range 之外的 点
+    cropBoxFilter_temp.setNegative(false);  // 保留 range 之内的 点
     cropBoxFilter_temp.setInputCloud(pc_surf);
     cropBoxFilter_temp.filter(*pc_filtered);
 
-    // outrem.setInputCloud(pc_filtered);
-    // // apply filter
-    // outrem.filter(*pc_filtered);
+    outrem.setInputCloud(pc_filtered);
+    // apply filter
+    outrem.filter(*pc_filtered);
     // pose_vec[i].t(2) = 0;
     mypcl::transform_pointcloud(*pc_filtered, *pc_filtered, pose_vec[i].t, pose_vec[i].q);
 
@@ -212,10 +216,11 @@ int main(int argc, char** argv)
     }
 
     // 根据位置去网格化
+    // 会丢失RGB信息
     // downsample_voxel(*pc_filtered, downsample_size);
 
     pcl::toROSMsg(*pc_filtered, cloudMsg);
-    cloudMsg.header.frame_id = "camera_init";
+    cloudMsg.header.frame_id = "odom";
     cloudMsg.header.stamp = cur_t;
     pub_map.publish(cloudMsg);
 
@@ -243,11 +248,11 @@ int main(int argc, char** argv)
     // transform.setOrigin(tf::Vector3(pose_vec[i].t(0), pose_vec[i].t(1), pose_vec[i].t(2)));
     // tf::Quaternion q(pose_vec[i].q.x(), pose_vec[i].q.y(), pose_vec[i].q.z(), pose_vec[i].q.w());
     // transform.setRotation(q);
-    // br.sendTransform(tf::StampedTransform(transform, ros::Time::now(), "camera_init", "turtle_name"));
+    // br.sendTransform(tf::StampedTransform(transform, ros::Time::now(), "odom", "turtle_name"));
 
     // publish pose trajectory
     visualization_msgs::Marker marker;
-    marker.header.frame_id = "camera_init";
+    marker.header.frame_id = "odom";
     marker.header.stamp = cur_t;
     marker.ns = "basic_shapes";
     marker.id = i;
@@ -274,7 +279,7 @@ int main(int argc, char** argv)
 
     // publish pose number
     visualization_msgs::Marker marker_txt;
-    marker_txt.header.frame_id = "camera_init";
+    marker_txt.header.frame_id = "odom";
     marker_txt.header.stamp = cur_t;
     marker_txt.ns = "marker_txt";
     marker_txt.id = i; // Any marker sent with the same namespace and id will overwrite the old one
@@ -308,15 +313,22 @@ int main(int argc, char** argv)
 
   if( save_global_map && global_map.size() )
   {
-    ROS_WARN("save map: %d ", global_map.size() );
-    pcl::io::savePCDFile( data_path +"global_map.pcd", global_map);
-    ROS_WARN("save map end:");
-    downsample_voxel(global_map, 0.05);
-    ROS_WARN("downsample_voxel save map: %d ", global_map.size() );
-    pcl::io::savePCDFile( data_path +"global_map_5cm.pcd", global_map);
-    downsample_voxel(global_map, 0.1);
-    ROS_WARN("downsample_voxel save map: %d ", global_map.size() );
-    pcl::io::savePCDFile( data_path +"global_map_10cm.pcd", global_map);
+    ROS_WARN("save map: %ld ", global_map.size() );
+    pcl::io::savePCDFile(data_path + "global_map.pcd", global_map);
+
+    static pcl::VoxelGrid<PointType> dsrgb;
+    dsrgb.setLeafSize( downsample_size,  downsample_size,  downsample_size );
+    dsrgb.setInputCloud(global_map.makeShared());
+    dsrgb.filter(global_map);
+    ROS_INFO("world rgb pts size after <%lfm> VoxelGrid: %ld .", downsample_size , global_map.points.size());
+
+    // ROS_WARN("save map end:");
+    // downsample_voxel(global_map, 0.05);
+    // ROS_WARN("downsample_voxel save map: %ld ", global_map.size() );
+    // pcl::io::savePCDFile( data_path +"global_map_5cm.pcd", global_map);
+    // downsample_voxel(global_map, 0.1);
+    // ROS_WARN("downsample_voxel save map: %ld ", global_map.size() );
+    pcl::io::savePCDFile( data_path + "global_map_voxel.pcd", global_map);
     ROS_WARN("save map end:");
   }
 
@@ -325,6 +337,10 @@ int main(int argc, char** argv)
   {
     ros::spinOnce();
     loop_rate.sleep();
+    if (exit_flag)
+    {
+      break;
+    }
   }
-  exit_flag = true;
+  
 }

@@ -59,10 +59,11 @@ namespace DetectandTract{
         std::mutex mtx_buffer;
 
         //crop lidar points
-        float maxX = 50.0, maxY = 30.0, minZ = -5;
+        float maxX = 150.0, maxY = 50.0, minZ = -20;
         float rgb_map_size = 0.05;
         int keyframe_cnts = 0;
-        std::string data_path ;
+        std::string data_path;
+        bool dense_map = false;
 
         struct initial_parameters
         {
