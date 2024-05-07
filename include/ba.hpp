@@ -12,8 +12,8 @@
 
 #include "tools.hpp"
 
-#define WIN_SIZE 20
-#define GAP 10
+#define WIN_SIZE 25 // 20  biger when odom is bad, then set smaller
+#define GAP 12       // 10  biger when odom is bad, then set smaller
 #define AVG_THR
 #define FULL_HESS
 #define ENABLE_RVIZ

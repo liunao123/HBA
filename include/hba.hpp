@@ -41,9 +41,9 @@ public:
     layer_num = 1;
     max_iter = 20;
     downsample_size = 0.1;
-    voxel_size = 2.0;
-    eigen_ratio = 0.1;
-    reject_ratio = 0.1;
+    voxel_size = 1.50 ; // 2.0 . biger when odom is bad, then set smaller
+    eigen_ratio = 0.075 ;
+    reject_ratio = 0.075 ; //0.1;
     pose_vec.clear(); mthreads.clear(); pcds.clear();
     hessians.clear(); mem_costs.clear();
   }

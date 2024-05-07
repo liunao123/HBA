@@ -104,7 +104,7 @@ namespace DetectandTract{
         pcl::io::savePCDFile(data_path + " livo_rgbmap.pcd",  world_rgb_pts);
         std::cout << "save rgb map done ......" << std::endl;
         res.success = true;
-        res.message = "rgb pcd file: " + data_path + " livo_rgbmap.pcd" ;
+        res.message = "rgb pcd file: " + data_path + "livo_rgbmap.pcd" ;
         return true;
     }
 

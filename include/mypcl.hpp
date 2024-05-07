@@ -228,7 +228,7 @@ namespace mypcl
       // if(i < pose_vec.size()-1) file << "\n";
 
     lio_path_file.setf(std::ios::fixed, std::ios::floatfield);
-    lio_path_file.precision(2);
+    // lio_path_file.precision(2);
     lio_path_file << st_pose[i] << " ";
     lio_path_file.precision(5);
 

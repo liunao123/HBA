@@ -239,16 +239,18 @@ int main(int argc, char** argv)
     pst.header.stamp = ros::Time().fromSec(st_pose[i]);
     pst.pose = apose;
     pubLidarPose.publish(pst);
+
     pcl::toROSMsg(*pc_surf, cloudMsg);
     cloudMsg.header.stamp = ros::Time().fromSec(st_pose[i]);
+    cloudMsg.header.frame_id = "lidar";    
     pubSurfPoint.publish(cloudMsg);
 
-    // static tf::TransformBroadcaster br;
-    // tf::Transform transform;
-    // transform.setOrigin(tf::Vector3(pose_vec[i].t(0), pose_vec[i].t(1), pose_vec[i].t(2)));
-    // tf::Quaternion q(pose_vec[i].q.x(), pose_vec[i].q.y(), pose_vec[i].q.z(), pose_vec[i].q.w());
-    // transform.setRotation(q);
-    // br.sendTransform(tf::StampedTransform(transform, ros::Time::now(), "odom", "turtle_name"));
+    static tf::TransformBroadcaster br;
+    tf::Transform transform;
+    transform.setOrigin(tf::Vector3(pose_vec[i].t(0), pose_vec[i].t(1), pose_vec[i].t(2)));
+    tf::Quaternion q(pose_vec[i].q.x(), pose_vec[i].q.y(), pose_vec[i].q.z(), pose_vec[i].q.w());
+    transform.setRotation(q);
+    br.sendTransform(tf::StampedTransform(transform, ros::Time().fromSec(st_pose[i]) , "odom", "lidar"));
 
     // publish pose trajectory
     visualization_msgs::Marker marker;
