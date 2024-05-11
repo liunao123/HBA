@@ -1,24 +1,22 @@
 <launch>
 	<arg name="rviz" default="true" />
     <param name="use_sim_time" value="false" />
-	<!-- <rosparam command="load" file="/opt/csg/SH100/slam/navs/src/multi_sensor_slam/FAST-LIVO/config/v1_livox_hk_sync.yaml" />
-	<rosparam command="load" file="/opt/csg/SH100/slam/navs/src/multi_sensor_slam/FAST-LIVO/config/camera_v1_livox_hk_sync.yaml" /> -->
-	
-    <rosparam command="load" file="/opt/csg/SH100/slam/navs/src/multi_sensor_slam/FAST-LIVO/config/v1_avia_hk.yaml" />
-	<rosparam command="load" file="/opt/csg/SH100/slam/navs/src/multi_sensor_slam/FAST-LIVO/config/camera_v1_avia_hk.yaml" />
+ 
+    <rosparam command="load" file="/opt/csg/slam/navs/src/HBA/rviz_cfg/camera_v1_avia_hk.yaml" />
 
     <param name="camera_topic" type="string" value="/hk_camera/image_color"/>
 
     <!-- <param name="pts_topic" type="string" value="/livox_pc2"/> -->
     <param name="pts_topic" type="string" value="/undistort_laser"/>
-    
     <param name="pose_topic" type="string" value="/lidar_pose"/>
 
-    <param name="rgb_map_size" type=" double " value="0.01"/>
-    <param name="dense_map" type=" bool  " value="true"/>
-    <param name="data_path" type=" string " value="/home/map/rgb_test_E2_avia/"/>
+    <param name="rgb_map_size" type=" double " value="0.1"/>
+    <param name="dense_map" type=" bool " value="false"/>
+    <param name="data_path" type=" string " value="/home/map/rgb_test_avia_circle_1/"/>
     
     <!-- launch-prefix="xterm -e gdb -ex run -args"  -->
 	<node pkg="hba" type="reproject_img_pts_with_pose" name="reproject_img_pts_with_pose" output="screen"  required="false" />
 	
+    <node launch-prefix="nice" pkg="rviz" type="rviz" name="rviz_" args="-d $(find hba)/rviz_cfg/rgb_debug.rviz" />
+
 </launch>
