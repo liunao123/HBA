@@ -41,14 +41,6 @@ namespace DetectandTract{
         nh.param<std::string>("pose_topic",i_params.pose_topic, "/lidar_pose" );
         nh.param< float >("rgb_map_size",rgb_map_size, 0.05 );
         nh.param<std::string>("data_path",data_path, "/home/map/rgb_test" );
-
-        ROS_ERROR("WARNING : after 10s will remove %s .", data_path.c_str());
-        ros::Duration(5).sleep();
-        ROS_ERROR(" remove %s .", data_path.c_str());
-        
-        system(("rm -r " + data_path + "./*").c_str());
-        system(("mkdir -p " + data_path + "pose_graph/").c_str());
-
         // nh.getParam("camera_topic", i_params.camera_topic);
 
         std::cout << "camera_topic: " << i_params.camera_topic <<  std::endl;
@@ -104,6 +96,14 @@ namespace DetectandTract{
         RT[11] = cameraextrinT[2];
         cv::Mat(4, 4, 6, &RT).copyTo(i_params.RT); // lidar to camera params
         std::cout << __FILE__ << ":" << __LINE__ << std::endl << i_params.RT << std::endl;
+
+        ROS_ERROR("WARNING : after 10s will remove %s .", data_path.c_str());
+        ros::Duration(5).sleep();
+        ROS_ERROR(" remove %s .", data_path.c_str());
+        
+        system(("rm -r " + data_path + "./*").c_str());
+        system(("mkdir -p " + data_path + "pose_graph/").c_str());
+
     }
 
     bool projector::save_rgb_map_srv(std_srvs::Trigger::Request &req, std_srvs::Trigger::Response &res)
@@ -158,10 +158,10 @@ namespace DetectandTract{
         // std::cout << "d_trans  : " << delta_translation.norm() << std::endl;
         // std::cout << "d_yaw : " << delta_yaw << std::endl;
         
-        if ( delta_translation.norm() < 0.1  && std::fabs(delta_yaw) < 0.1 && keyframe_cnts != 0 ) // 0.1m or 0.1rad
-        {
-            return;
-        }
+        // if ( delta_translation.norm() < 0.1  && std::fabs(delta_yaw) < 0.1 && keyframe_cnts != 0 ) // 0.1m or 0.1rad
+        // {
+        //     return;
+        // }
         // 更新试上一次的位姿
         last_pose = transformMatrix_b2w;
 

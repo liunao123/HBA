@@ -1,6 +1,5 @@
 #include "reproject_img_pts.h"
 
-
 namespace DetectandTract{
     void projector::initParams(ros::NodeHandle &nh)
     {
@@ -17,13 +16,6 @@ namespace DetectandTract{
         nh.param< bool >("dense_map",dense_map, false );
 
         rgb_pts_cloud.reset(new PointCloudXYZRGB( ));
-
-        ROS_ERROR("WARNING : after 10s will remove %s .", data_path.c_str());
-        ros::Duration(5).sleep();
-        ROS_ERROR(" remove %s .", data_path.c_str());
-        
-        system(("rm -r " + data_path + "./*").c_str());
-        system(("mkdir -p " + data_path + "pose_graph/").c_str());
 
         // nh.getParam("camera_topic", i_params.camera_topic);
 
@@ -79,7 +71,18 @@ namespace DetectandTract{
         RT[7] = cameraextrinT[1];
         RT[11] = cameraextrinT[2];
         cv::Mat(4, 4, 6, &RT).copyTo(i_params.RT); // lidar to camera params
-        std::cout << __FILE__ << ":" << __LINE__ << std::endl << i_params.RT << std::endl;
+        std::cout << __FILE__ << ":" << __LINE__ << std::endl
+                  << i_params.RT << std::endl;
+
+        ROS_ERROR("WARNING : after 10s will remove %s .", data_path.c_str());
+        // ros::Duration(5).sleep(); //ros 时间 play的 -r  会影响这个
+        sleep(5); // second s
+
+        ROS_ERROR(" remove %s .", data_path.c_str());
+        
+        system(("rm -r " + data_path + "./*").c_str());
+        system(("mkdir -p " + data_path + "pose_graph/").c_str());
+
     }
 
     bool projector::save_rgb_map_srv(std_srvs::Trigger::Request &req, std_srvs::Trigger::Response &res)
@@ -181,7 +184,7 @@ namespace DetectandTract{
             // std::cout << "pixel: " << pt.y << " " << pt.x << std::endl;
 
             // 移除边缘的点
-            const int remove_pixel_thres = 10;
+            const int remove_pixel_thres = 2;
             if (pt.y < remove_pixel_thres || pt.y > (i_params.cam_height - remove_pixel_thres) ||
                 pt.x < remove_pixel_thres || pt.x > (i_params.cam_width - remove_pixel_thres))
             {
@@ -267,6 +270,7 @@ namespace DetectandTract{
         auto pose_msg = pose_buffer.front();
 
         ROS_WARN_ONCE("project pts with pose :");
+        // ROS_INFO("project pts<%ld>with pose :", rgb_pts_cloud->size());
 
         static Eigen::Matrix4d last_pose = Eigen::Matrix4d::Identity();
 
@@ -308,7 +312,7 @@ namespace DetectandTract{
         system(("mkdir -p " + one_path).c_str());
 
         pcl::io::savePCDFile(one_path + "/cloud.pcd", *rgb_pts_cloud);
-        // pcl::io::savePCDFile(one_path + "/cloud_dis.pcd", *rgb_pts_cloud_dis);
+        // pcl::io::savePCDFile(one_path + "/cloud_dis.pcd", *cloud);
 
         std::ofstream file((data_path + "pose_graph/graph.g2o"), std::ios_base::app); // 使用追加模式打开文件
         if (!file)
@@ -326,24 +330,29 @@ namespace DetectandTract{
         pcl::transformPointCloud(*rgb_pts_cloud, scan_world, transformMatrix_b2w);
 
         // 放到一起再发出去
-        world_rgb_pts += scan_world;
+        // world_rgb_pts += scan_world;
         
         // world_rgb_pts.points.clear();
         // world_rgb_pts = scan_world;
 
-        if (keyframe_cnts % 10 == 0)
-        {
-            static pcl::VoxelGrid<PointTypeRGB> dsrgb;
-            dsrgb.setLeafSize(rgb_map_size, rgb_map_size, rgb_map_size);
-            dsrgb.setInputCloud(world_rgb_pts.makeShared());
-            dsrgb.filter(world_rgb_pts);
-            ROS_WARN("world rgb pts size: %ld .", world_rgb_pts.points.size());
-        }
+        // if (keyframe_cnts % 10 == 0)
+        // {
+        //     static pcl::VoxelGrid<PointTypeRGB> dsrgb;
+        //     dsrgb.setLeafSize(rgb_map_size, rgb_map_size, rgb_map_size);
+        //     dsrgb.setInputCloud(world_rgb_pts.makeShared());
+        //     dsrgb.filter(world_rgb_pts);
+        //     ROS_WARN("world rgb pts size: %ld .", world_rgb_pts.points.size());
+        // }
 
         sensor_msgs::PointCloud2 wpts;
         // pcl::toROSMsg(world_rgb_pts, wpts);
         pcl::toROSMsg(scan_world, wpts);
         wpts.header = pose_msg->header;
+
+        // 上色后的点云 坐标系没变 lidar
+        // pcl::toROSMsg(*rgb_pts_cloud, wpts);
+        // wpts.header = pc->header;
+        
         pubLaserCloudFullRes.publish(wpts); // Append the world-frame point cloud to the output.
 
     }
@@ -375,6 +384,9 @@ namespace DetectandTract{
         typedef message_filters::sync_policies::ExactTime<sensor_msgs::Image, sensor_msgs::PointCloud2>
             MySyncPolicy_pts_img;
 
+        // typedef message_filters::sync_policies::ApproximateTime<sensor_msgs::Image, sensor_msgs::PointCloud2>
+        //     MySyncPolicy_pts_img;
+
         // 创建消息同步器，并将订阅器和回调函数绑定到同步器上
         message_filters::Synchronizer<MySyncPolicy_pts_img> sync_pts_img(MySyncPolicy_pts_img(10000), image_sub, pcl_sub );
         sync_pts_img.registerCallback(boost::bind(&projector::projection_img_pts_callback, this, _1, _2));
@@ -386,9 +398,8 @@ namespace DetectandTract{
         server_save_rgbmap = nh.advertiseService("save_rgb_map", &projector::save_rgb_map_srv, this);
 
         ros::spin();
+        
     }
-
-
 
 }
 

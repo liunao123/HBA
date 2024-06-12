@@ -2,6 +2,7 @@
 #include <stdio.h>
 #include <fstream>
 #include <iostream>
+#include <csignal>
 
 #include <pcl/point_cloud.h>
 #include <pcl/point_types.h>
@@ -39,13 +40,12 @@ bool exit_flag = false;
 
 int threadFunction()
 {
-    while (true)
+    while ( ros::ok() )
     {
         if ( exit_flag )
         {
           break;
         }
-
         // std::cout << "按下 Enter 键暂停循环，再次按下 Enter 键继续，或输入 'q' 退出：" << std::endl;
         int c = getchar();
         if (c == '\n')
@@ -53,21 +53,31 @@ int threadFunction()
           stop = !stop;
           std::cout << "stop is " << stop << std::endl;
         }
-        if ( c == ' ')
-        {
-          std::cout << "break exit() " << std::endl;
-          break;
-        }
+        // if ( c == ' ')
+        // {
+        //   std::cout << "break exit() " << std::endl;
+        //   break;
+        // }
+        ros::Duration(0.01).sleep();
     }
+    std::cout << "threadFunction exit ." << std::endl;
+}
+
+void signal_callback_handler(int signum)
+{
+  exit_flag = true;
+  std::cout << "Caught signal, EXIT " << signum << std::endl;
+  // Terminate program
+  exit(signum);
 }
 
 int main(int argc, char** argv)
 {
+  signal(SIGINT, signal_callback_handler);
   ros::init(argc, argv, "visualize");
   ros::NodeHandle nh("~");
 
   std::thread myThread(threadFunction);
-  myThread.detach();
 
   ros::Publisher pub_map = nh.advertise<sensor_msgs::PointCloud2>("/cloud_map", 100);
   ros::Publisher pub_debug = nh.advertise<sensor_msgs::PointCloud2>("/cloud_debug", 100);
@@ -95,7 +105,7 @@ int main(int argc, char** argv)
   nh.getParam("save_global_map", save_global_map);
   nh.getParam("pub_step", pub_step);
   ROS_WARN("pub_step %d ", pub_step);
-  system( std::string("rosparam set /use_sim_time  false").c_str() );
+  // system( std::string("rosparam set /use_sim_time  false").c_str() );
 
   sensor_msgs::PointCloud2 debugMsg, cloudMsg, outMsg;
   vector<mypcl::pose> pose_vec;
@@ -147,18 +157,18 @@ int main(int argc, char** argv)
 
   // cout<<"push enter to view"<<endl;
   // getchar();
-  usleep(5000*1000);
+  usleep(2000*1000);
   pcl::PointCloud<PointType> global_map;
 
   float range = 2.0;
   pcl::CropBox<PointType> cropBoxFilter_temp(true);
-  pcl::RadiusOutlierRemoval<PointType> outrem;
-  outrem.setRadiusSearch(0.2);
-  outrem.setMinNeighborsInRadius(1);
+  // pcl::RadiusOutlierRemoval<PointType> outrem;
+  // outrem.setRadiusSearch(0.2);
+  // outrem.setMinNeighborsInRadius(1);
 
-  range = 150.0;
+  range = 250.0;
   cropBoxFilter_temp.setMin(Eigen::Vector4f(-range, -range, -range, 1.0f));
-  cropBoxFilter_temp.setMax(Eigen::Vector4f(range, range, 50, 1.0f));
+  cropBoxFilter_temp.setMax(Eigen::Vector4f(range, range, range, 1.0f));
 
   for(size_t i = pcd_start_index; i < pcd_end_index ; i++)
   {
@@ -179,9 +189,11 @@ int main(int argc, char** argv)
       ROS_INFO("read %0.1f% , %ldth file , total %ld  . ", float(100.0*i / pcd_end_index) , i , pcd_end_index );
     }
 
-    // if( i > 1000  && i < 4000 ) continue;
+    // if( i > 1000  && i < 2500 ) continue;
 
-    // if( i > 3020  && i < 3090 ) continue;
+    // if( i > 3500  && i < 8000 ) continue;
+
+
     // if( i > 3930  && i < 4140 ) continue;
     // if( i > 5000  && i < 5130 ) continue;
     // if( i > 6000  && i < 6130 ) continue;
@@ -204,9 +216,9 @@ int main(int argc, char** argv)
     cropBoxFilter_temp.setInputCloud(pc_surf);
     cropBoxFilter_temp.filter(*pc_filtered);
 
-    outrem.setInputCloud(pc_filtered);
-    // apply filter
-    outrem.filter(*pc_filtered);
+    // outrem.setInputCloud(pc_filtered);
+    // // apply filter
+    // outrem.filter(*pc_filtered);
     // pose_vec[i].t(2) = 0;
     mypcl::transform_pointcloud(*pc_filtered, *pc_filtered, pose_vec[i].t, pose_vec[i].q);
 
@@ -339,10 +351,9 @@ int main(int argc, char** argv)
   {
     ros::spinOnce();
     loop_rate.sleep();
-    if (exit_flag)
-    {
-      break;
-    }
   }
+  ROS_WARN("exit......");
+  exit_flag = true;
+  myThread.join();
   
 }

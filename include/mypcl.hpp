@@ -230,7 +230,7 @@ namespace mypcl
     lio_path_file.setf(std::ios::fixed, std::ios::floatfield);
     // lio_path_file.precision(2);
     lio_path_file << st_pose[i] << " ";
-    lio_path_file.precision(5);
+    lio_path_file.precision(10);
 
     lio_path_file
         << pose_vec[i].t(0) << " "
