@@ -58,6 +58,7 @@ namespace DetectandTract{
         cameraIn[2] = cam_cx;
         cameraIn[6] = cam_cy;
         cameraIn[10] = 1.0;
+        cameraIn[15] = 1.0;
         cv::Mat(4, 4, 6, &cameraIn).copyTo(i_params.cameraIn);     //cameratocamera params
         std::cout << __FILE__ <<":" << __LINE__ <<  std::endl << i_params.cameraIn << std::endl;
 
@@ -94,6 +95,7 @@ namespace DetectandTract{
         RT[3] = cameraextrinT[0];
         RT[7] = cameraextrinT[1];
         RT[11] = cameraextrinT[2];
+        RT[15] = 1;
         cv::Mat(4, 4, 6, &RT).copyTo(i_params.RT); // lidar to camera params
         std::cout << __FILE__ << ":" << __LINE__ << std::endl << i_params.RT << std::endl;
 
@@ -201,7 +203,7 @@ namespace DetectandTract{
         // cv::destroyAllWindows();
 
         // cv::Mat visImg = raw_img.clone();
-        cv::Mat overlay = raw_img.clone();
+        cv::Mat overlay = undistortedImage.clone();
         // std::cout<<"get img  data at time : " << std::to_string ( img->header.stamp.toSec()  ) <<std::endl;
         // std::cout<<"get pts  data at time : " << std::to_string ( pc->header.stamp.toSec()  ) <<std::endl;
         // std::cout<<"get pose data at time : " << std::to_string ( pose_msg->header.stamp.toSec()  ) <<std::endl;
@@ -209,11 +211,11 @@ namespace DetectandTract{
         PointCloudXYZRGB::Ptr rgb_pts_cloud(new PointCloudXYZRGB(cloud->points.size(), 1));
         rgb_pts_cloud->clear();
 
-        PointCloudXYZRGB::Ptr rgb_pts_cloud_dis(new PointCloudXYZRGB(cloud->points.size(), 1));
-        rgb_pts_cloud_dis->clear();
+        // PointCloudXYZRGB::Ptr rgb_pts_cloud_dis(new PointCloudXYZRGB(cloud->points.size(), 1));
+        // rgb_pts_cloud_dis->clear();
 
         cv::Mat X(4, 1, cv::DataType<double>::type);
-        cv::Mat Y(3, 1, cv::DataType<double>::type);
+        cv::Mat Y(4, 1, cv::DataType<double>::type);
 
         for (pcl::PointCloud<pcl::PointXYZI>::const_iterator it = cloud->points.begin(); it != cloud->points.end(); it++)
         {
@@ -229,17 +231,19 @@ namespace DetectandTract{
 
             // Y = i_params.cameraIn * i_params.camtocam_mat * i_params.RT * X;  //tranform the point to the camera coordinate
             Y = i_params.cameraIn * i_params.RT * X; // tranform the point to the camera coordinate
+            // Y = cameraMatrix * i_params.RT * X; // tranform the point to the camera coordinate
 
             // std::cout << __FILE__ <<":" << __LINE__ <<  std::endl << i_params.cameraIn << std::endl;
             // std::cout << __FILE__ <<":" << __LINE__ <<  std::endl << i_params.RT << std::endl;
+            // std::cout << __FILE__ <<":" << __LINE__ <<  std::endl << Y << std::endl;
 
             cv::Point pt;
             pt.x = Y.at<double>(0, 0) / Y.at<double>(0, 2);
             pt.y = Y.at<double>(1, 0) / Y.at<double>(0, 2);
-            // std::cout << "pixel: " << pt.y << " " << pt.x << std::endl;
+            // std::cout << "pixel: " << pt.y << " " << pt.x << "  Y2 :"  << Y.at<double>(0, 2) <<  std::endl;
 
             // 移除边缘的点
-            const int remove_pixel_thres = 1;
+            const int remove_pixel_thres = 5;
             if (pt.y < remove_pixel_thres || pt.y > (i_params.cam_height - remove_pixel_thres) ||
                 pt.x < remove_pixel_thres || pt.x > (i_params.cam_width - remove_pixel_thres))
             {
@@ -260,8 +264,9 @@ namespace DetectandTract{
             pointRGB.b = pixel_rgb[0];
 
             float Gray = 0.2989 * pointRGB.r + 0.5870 * pointRGB.g + 0.1140 * pointRGB.b;
-            if ( Gray > 245.0  ) // 过白的点，就不要了
+            if ( Gray > 240.0  ) // 过白的点，就不要了
             {
+            //   continue;
               pointRGB.r = 240;
               pointRGB.g = 240;
               pointRGB.b = 240;
@@ -270,11 +275,7 @@ namespace DetectandTract{
             rgb_pts_cloud->push_back(pointRGB);
 
             //! debug
-            pixel_rgb = raw_img.at<cv::Vec3b>(pt.y, pt.x);
-            pointRGB.r = pixel_rgb[2];
-            pointRGB.g = pixel_rgb[1];
-            pointRGB.b = pixel_rgb[0];
-            rgb_pts_cloud_dis->push_back(pointRGB);
+            // rgb_pts_cloud_dis->push_back(pointRGB);
 
             float val = it->x;
             float maxVal = 15.0;
@@ -312,7 +313,7 @@ namespace DetectandTract{
         ss << std::setw(6) << std::setfill('0') << keyframe_cnts;
         std::string one_path = data_path + "pose_graph/" + ss.str();
         system(("mkdir -p " + one_path).c_str());
-        pcl::io::savePCDFile(one_path + "/cloud.pcd", *rgb_pts_cloud);
+        // pcl::io::savePCDFile(one_path + "/cloud.pcd", *rgb_pts_cloud);
         // pcl::io::savePCDFile(one_path + "/cloud_dis.pcd", *rgb_pts_cloud_dis);
 
         std::ofstream file((data_path + "pose_graph/graph.g2o"), std::ios_base::app); // 使用追加模式打开文件
@@ -331,27 +332,27 @@ namespace DetectandTract{
         pcl::transformPointCloud(*rgb_pts_cloud, scan_world, transformMatrix_b2w);
 
         // 放到一起再发出去
-        world_rgb_pts += scan_world;
+        // world_rgb_pts += scan_world;
 
-        if (keyframe_cnts % 10 == 0)
-        {
-            static pcl::VoxelGrid<PointTypeRGB> dsrgb;
-            dsrgb.setLeafSize(rgb_map_size, rgb_map_size, rgb_map_size);
-            dsrgb.setInputCloud(world_rgb_pts.makeShared());
-            dsrgb.filter(world_rgb_pts);
-        }
+        // if (keyframe_cnts % 10 == 0)
+        // {
+        //     static pcl::VoxelGrid<PointTypeRGB> dsrgb;
+        //     dsrgb.setLeafSize(rgb_map_size, rgb_map_size, rgb_map_size);
+        //     dsrgb.setInputCloud(world_rgb_pts.makeShared());
+        //     dsrgb.filter(world_rgb_pts);
+        // }
 
-            sensor_msgs::PointCloud2 wpts;
-            pcl::toROSMsg(world_rgb_pts, wpts);
-            wpts.header = pose_msg->header;
-            pubLaserCloudFullRes.publish(wpts); // Append the world-frame point cloud to the output.
-            ROS_WARN("world rgb pts size: %ld .", world_rgb_pts.points.size());
-
-            // 一帧一帧的发出去 odom坐标系下
             // sensor_msgs::PointCloud2 wpts;
-            // pcl::toROSMsg(scan_world, wpts);
+            // pcl::toROSMsg(world_rgb_pts, wpts);
             // wpts.header = pose_msg->header;
             // pubLaserCloudFullRes.publish(wpts); // Append the world-frame point cloud to the output.
+            // ROS_WARN("world rgb pts size: %ld .", world_rgb_pts.points.size());
+
+            // 一帧一帧的发出去 odom坐标系下
+            sensor_msgs::PointCloud2 wpts;
+            pcl::toROSMsg(scan_world, wpts);
+            wpts.header = pose_msg->header;
+            pubLaserCloudFullRes.publish(wpts); // Append the world-frame point cloud to the output.
 
         }
 

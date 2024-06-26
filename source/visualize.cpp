@@ -37,6 +37,7 @@ using namespace Eigen;
 
 bool stop = false;
 bool exit_flag = false;
+size_t i = 0;
 
 int threadFunction()
 {
@@ -51,7 +52,7 @@ int threadFunction()
         if (c == '\n')
         {
           stop = !stop;
-          std::cout << "stop is " << stop << std::endl;
+          std::cout << "stop is " << stop << " . at : " << i <<  std::endl;
         }
         // if ( c == ' ')
         // {
@@ -160,17 +161,17 @@ int main(int argc, char** argv)
   usleep(2000*1000);
   pcl::PointCloud<PointType> global_map;
 
-  float range = 2.0;
+  float range = 1.0;
   pcl::CropBox<PointType> cropBoxFilter_temp(true);
   // pcl::RadiusOutlierRemoval<PointType> outrem;
   // outrem.setRadiusSearch(0.2);
   // outrem.setMinNeighborsInRadius(1);
 
-  range = 250.0;
+  range = 20.0;
   cropBoxFilter_temp.setMin(Eigen::Vector4f(-range, -range, -range, 1.0f));
   cropBoxFilter_temp.setMax(Eigen::Vector4f(range, range, range, 1.0f));
-
-  for(size_t i = pcd_start_index; i < pcd_end_index ; i++)
+  i = pcd_start_index;
+  for( ; i < pcd_end_index ; i++)
   {
     if ( stop )
     {
@@ -189,7 +190,7 @@ int main(int argc, char** argv)
       ROS_INFO("read %0.1f% , %ldth file , total %ld  . ", float(100.0*i / pcd_end_index) , i , pcd_end_index );
     }
 
-    // if( i > 1000  && i < 2500 ) continue;
+    // if( i > 550  && i < 570 ) continue;
 
     // if( i > 3500  && i < 8000 ) continue;
 
@@ -249,12 +250,13 @@ int main(int argc, char** argv)
 
     geometry_msgs::PoseStamped pst;
     pst.header.stamp = ros::Time().fromSec(st_pose[i]);
+    pst.header.frame_id = "odom";    
     pst.pose = apose;
     pubLidarPose.publish(pst);
 
     pcl::toROSMsg(*pc_surf, cloudMsg);
     cloudMsg.header.stamp = ros::Time().fromSec(st_pose[i]);
-    cloudMsg.header.frame_id = "lidar";    
+    cloudMsg.header.frame_id = "base_link";    
     pubSurfPoint.publish(cloudMsg);
 
     static tf::TransformBroadcaster br;
@@ -262,7 +264,7 @@ int main(int argc, char** argv)
     transform.setOrigin(tf::Vector3(pose_vec[i].t(0), pose_vec[i].t(1), pose_vec[i].t(2)));
     tf::Quaternion q(pose_vec[i].q.x(), pose_vec[i].q.y(), pose_vec[i].q.z(), pose_vec[i].q.w());
     transform.setRotation(q);
-    br.sendTransform(tf::StampedTransform(transform, ros::Time().fromSec(st_pose[i]) , "odom", "lidar"));
+    br.sendTransform(tf::StampedTransform(transform, ros::Time().fromSec(st_pose[i]) , "odom", "base_link"));
 
     // publish pose trajectory
     visualization_msgs::Marker marker;
@@ -321,7 +323,7 @@ int main(int argc, char** argv)
     if(i%GAP == 0) markerArray.markers.push_back(marker_txt);
     pub_pose_number.publish(markerArray);
 
-    ros::Duration(0.001).sleep();
+    ros::Duration(0.01).sleep();
   }
   ROS_WARN("pub end:");
 

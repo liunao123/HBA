@@ -70,6 +70,7 @@ namespace DetectandTract{
         RT[3] = cameraextrinT[0];
         RT[7] = cameraextrinT[1];
         RT[11] = cameraextrinT[2];
+        RT[12] = 1;
         cv::Mat(4, 4, 6, &RT).copyTo(i_params.RT); // lidar to camera params
         std::cout << __FILE__ << ":" << __LINE__ << std::endl
                   << i_params.RT << std::endl;
@@ -87,7 +88,7 @@ namespace DetectandTract{
 
     bool projector::save_rgb_map_srv(std_srvs::Trigger::Request &req, std_srvs::Trigger::Response &res)
     {
-        std::cout << "save rgb map start ......" << std::endl;
+        // std::cout << "save rgb map start ......" << std::endl;
         if (world_rgb_pts.points.empty())
         {
             res.success = false;
@@ -150,7 +151,8 @@ namespace DetectandTract{
         // cv::waitKey(10);
         // cv::destroyAllWindows();
 
-        cv::Mat overlay = raw_img.clone();
+        // cv::Mat overlay = raw_img.clone();
+        cv::Mat overlay = undistortedImage.clone();
         // std::cout<<"get img  data at time : " << std::to_string ( img->header.stamp.toSec()  ) <<std::endl;
         // std::cout<<"get pts  data at time : " << std::to_string ( pc->header.stamp.toSec()  ) <<std::endl;
         // std::cout<<"get pose data at time : " << std::to_string ( pose_msg->header.stamp.toSec()  ) <<std::endl;
@@ -159,7 +161,7 @@ namespace DetectandTract{
         rgb_pts_cloud->clear();
 
         cv::Mat X(4, 1, cv::DataType<double>::type);
-        cv::Mat Y(3, 1, cv::DataType<double>::type);
+        cv::Mat Y(4, 1, cv::DataType<double>::type);
 
         for (pcl::PointCloud<pcl::PointXYZI>::const_iterator it = cloud->points.begin(); it != cloud->points.end(); it++)
         {
@@ -204,13 +206,14 @@ namespace DetectandTract{
             pointRGB.g = pixel_rgb[1];
             pointRGB.b = pixel_rgb[0];
 
-            float Gray = 0.2989 * pointRGB.r + 0.5870 * pointRGB.g + 0.1140 * pointRGB.b;
-            if ( Gray > 245.0  ) // 过白的点，就不要了
-            {
-              pointRGB.r = 240;
-              pointRGB.g = 240;
-              pointRGB.b = 240;
-            }
+            // float Gray = 0.2989 * pointRGB.r + 0.5870 * pointRGB.g + 0.1140 * pointRGB.b;
+            // if ( Gray > 240.0  ) // 过白的点，就不要了
+            // {
+            // //   continue;
+            //   pointRGB.r = 240;
+            //   pointRGB.g = 240;
+            //   pointRGB.b = 240;
+            // }
 
             rgb_pts_cloud->push_back(pointRGB);
 
@@ -243,10 +246,10 @@ namespace DetectandTract{
         else
         {
             // 找到与点云时间戳一样的pose
-            if (pose_buffer.front()->header.stamp.toSec() > img->header.stamp.toSec())
-            {
-                return;
-            }
+            // if (pose_buffer.front()->header.stamp.toSec() > img->header.stamp.toSec())
+            // {
+            //     return;
+            // }
 
             while (  !pose_buffer.empty()  )
             {
