@@ -34,6 +34,7 @@ namespace DetectandTract{
         cameraIn[2] = cam_cx;
         cameraIn[6] = cam_cy;
         cameraIn[10] = 1.0;
+        cameraIn[15] = 1.0;
         cv::Mat(4, 4, 6, &cameraIn).copyTo(i_params.cameraIn);     //cameratocamera params
         std::cout << __FILE__ <<":" << __LINE__ <<  std::endl << i_params.cameraIn << std::endl;
 
@@ -70,7 +71,7 @@ namespace DetectandTract{
         RT[3] = cameraextrinT[0];
         RT[7] = cameraextrinT[1];
         RT[11] = cameraextrinT[2];
-        RT[12] = 1;
+        RT[15] = 1;
         cv::Mat(4, 4, 6, &RT).copyTo(i_params.RT); // lidar to camera params
         std::cout << __FILE__ << ":" << __LINE__ << std::endl
                   << i_params.RT << std::endl;
@@ -221,7 +222,7 @@ namespace DetectandTract{
             float maxVal = 15.0;
             int red = std::min(255, (int)(255 * abs((val - maxVal) / maxVal)));
             int green = std::min(255, (int)(255 * (1 - abs((val - maxVal) / maxVal))));
-            cv::circle(overlay, pt, 1, cv::Scalar(0, green, red), -1);
+            cv::circle(overlay, pt, 2, cv::Scalar(0, green, red), -1);
         }
 
         if ( rgb_pts_cloud->empty() )
