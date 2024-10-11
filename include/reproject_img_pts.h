@@ -37,6 +37,7 @@
 #include <pcl/point_types.h>
 #include <pcl_conversions/pcl_conversions.h>
 #include <pcl_ros/transforms.h>
+#include <pcl/io/pcd_io.h>
 
 #include <Eigen/Dense>
 

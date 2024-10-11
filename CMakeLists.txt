@@ -18,10 +18,10 @@ find_package(catkin REQUIRED COMPONENTS
   std_msgs
   geometry_msgs
   visualization_msgs
-  tf
+  # tf
 )
 
-set(OpenCV_DIR /usr/local/share/OpenCV)
+# set(OpenCV_DIR /usr/local/share/OpenCV)
 find_package(catkin REQUIRED COMPONENTS
   cv_bridge
   pcl_conversions
@@ -65,7 +65,13 @@ target_link_libraries(visualize_map ${catkin_LIBRARIES} ${PCL_LIBRARIES})
 
 # reproject_pts_img with odometry
 add_executable(reproject_pts_img source/project.cpp)
-target_link_libraries(reproject_pts_img ${catkin_LIBRARIES}  ${OpenCV_LIBS})
+target_link_libraries(reproject_pts_img ${catkin_LIBRARIES}  ${OpenCV_LIBRARIES})
 
 add_executable(reproject_img_pts_with_pose source/reproject_img_pts.cpp)
-target_link_libraries(reproject_img_pts_with_pose ${catkin_LIBRARIES}  ${OpenCV_LIBS})
+target_link_libraries(reproject_img_pts_with_pose ${catkin_LIBRARIES}  ${OpenCV_LIBRARIES})
+
+add_executable(project_points2img_offine source/project_points2img_offine.cpp)
+target_link_libraries(project_points2img_offine ${catkin_LIBRARIES}  ${OpenCV_LIBRARIES}  ${PCL_LIBRARIES} )
+
+add_executable(odom2posegraph source/odom2posegraph.cpp)
+target_link_libraries(odom2posegraph ${catkin_LIBRARIES}  ${PCL_LIBRARIES} )

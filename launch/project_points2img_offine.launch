@@ -1,0 +1,13 @@
+<launch>
+	<arg name="rviz" default="true" />
+ 
+    <!-- <rosparam command="load" file="$(find hba)/rviz_cfg/camera_v2_vel2cam.yaml" /> -->
+    <!-- <rosparam command="load" file="$(find hba)/rviz_cfg/camera_v1_avia_hk.yaml" /> -->
+    <rosparam command="load" file="$(find hba)/rviz_cfg/camera_v2_vel2cam_vanjee_hk.yaml" />
+ 
+    <!-- launch-prefix="xterm -e gdb -ex run -args"  -->
+	<node pkg="hba" type="project_points2img_offine" name="project_points2img_offine" output="screen"  required="false"  />
+ 
+    <node launch-prefix="nice" pkg="rviz" type="rviz" name="rviz_rgb" args="-d $(find hba)/rviz_cfg/rgb_debug.rviz" />
+  
+</launch>

@@ -76,15 +76,12 @@ namespace DetectandTract{
         std::cout << __FILE__ << ":" << __LINE__ << std::endl
                   << i_params.RT << std::endl;
 
-        ROS_ERROR("WARNING : after 10s will remove %s .", data_path.c_str());
+        ROS_WARN("WARNING : after 5s will remove %s .", data_path.c_str());
         // ros::Duration(5).sleep(); //ros 时间 play的 -r  会影响这个
         sleep(5); // second s
-
-        ROS_ERROR(" remove %s .", data_path.c_str());
-        
-        system(("rm -r " + data_path + "./*").c_str());
+        ROS_WARN(" remove %s .", data_path.c_str());
+        system(("rm -r " + data_path).c_str());
         system(("mkdir -p " + data_path + "pose_graph/").c_str());
-
     }
 
     bool projector::save_rgb_map_srv(std_srvs::Trigger::Request &req, std_srvs::Trigger::Response &res)
@@ -121,10 +118,15 @@ namespace DetectandTract{
         try
         {
             cv_ptr = cv_bridge::toCvCopy(img, "bgr8");
+            if ( img->width != i_params.cam_width  ||  img->height != i_params.cam_height )
+            {
+                ROS_WARN("image size is WRONG." );
+                return;
+            }
         }
         catch (cv_bridge::Exception &e)
         {
-            ROS_ERROR("cv_bridge exception: %s", e.what());
+            ROS_WARN("cv_bridge exception: %s", e.what());
             return;
         }
         cv::Mat raw_img = cv_ptr->image;
@@ -227,7 +229,7 @@ namespace DetectandTract{
 
         if ( rgb_pts_cloud->empty() )
         {
-            ROS_ERROR("empty ");
+            ROS_WARN("rgb_pts_cloud is empty .");
             return;
         }
         // Publish the image projection

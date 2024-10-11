@@ -178,7 +178,12 @@ int main(int argc, char** argv)
       i--;
       continue;
     }
-    
+
+    if (exit_flag)
+    {
+      break;
+    }
+
     // 只使用部分帧
     if ( i % pub_step )
     {
@@ -207,7 +212,14 @@ int main(int argc, char** argv)
     // if( i > 6500  && i < 6600 ) continue;
     // if( i > 7400  && i < 7500 ) continue;
 
+    pc_surf->points.clear();
     mypcl::loadPCD(data_path + "pose_graph/", pcd_name_fill_num, pc_surf, i );
+    // ROS_WARN("pc_surf : %d ", pc_surf->points.size() );
+    // 第 0 个点云 应该没有 ，对应的位姿 是 0
+    if( pc_surf->points.empty() )
+    {
+      continue;
+    }
 
     pcl::PointCloud<PointType>::Ptr pc_filtered(new pcl::PointCloud<PointType>);
     pc_filtered->resize(pc_surf->points.size());
@@ -216,6 +228,7 @@ int main(int argc, char** argv)
     cropBoxFilter_temp.setNegative(false);  // 保留 range 之内的 点
     cropBoxFilter_temp.setInputCloud(pc_surf);
     cropBoxFilter_temp.filter(*pc_filtered);
+    // *pc_filtered = *pc_surf;
 
     // outrem.setInputCloud(pc_filtered);
     // // apply filter

@@ -238,8 +238,8 @@ namespace DetectandTract{
             // std::cout << __FILE__ <<":" << __LINE__ <<  std::endl << Y << std::endl;
 
             cv::Point pt;
-            pt.x = Y.at<double>(0, 0) / Y.at<double>(0, 2);
-            pt.y = Y.at<double>(1, 0) / Y.at<double>(0, 2);
+            pt.x = std::round (Y.at<double>(0, 0) / Y.at<double>(0, 2) );
+            pt.y = std::round (Y.at<double>(1, 0) / Y.at<double>(0, 2) );
             // std::cout << "pixel: " << pt.y << " " << pt.x << "  Y2 :"  << Y.at<double>(0, 2) <<  std::endl;
 
             // 移除边缘的点
@@ -281,7 +281,7 @@ namespace DetectandTract{
             float maxVal = 15.0;
             int red = std::min(255, (int)(255 * abs((val - maxVal) / maxVal)));
             int green = std::min(255, (int)(255 * (1 - abs((val - maxVal) / maxVal))));
-            cv::circle(overlay, pt, 1, cv::Scalar(0, green, red), -1);
+            cv::circle(overlay, pt, 2, cv::Scalar(0, green, red), -1);
         }
 
         // Publish the image projection
@@ -313,7 +313,7 @@ namespace DetectandTract{
         ss << std::setw(6) << std::setfill('0') << keyframe_cnts;
         std::string one_path = data_path + "pose_graph/" + ss.str();
         system(("mkdir -p " + one_path).c_str());
-        // pcl::io::savePCDFile(one_path + "/cloud.pcd", *rgb_pts_cloud);
+        pcl::io::savePCDFile(one_path + "/cloud.pcd", *rgb_pts_cloud);
         // pcl::io::savePCDFile(one_path + "/cloud_dis.pcd", *rgb_pts_cloud_dis);
 
         std::ofstream file((data_path + "pose_graph/graph.g2o"), std::ios_base::app); // 使用追加模式打开文件

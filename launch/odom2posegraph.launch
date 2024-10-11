@@ -1,0 +1,12 @@
+<launch>
+	<arg name="rviz" default="true" />
+ 
+	<node pkg="hba" type="odom2posegraph" name="odom2posegraph" output="screen"  required="false" >
+	    <!-- odom里面需要速度信息 -->
+		<remap from="/lidar_odom" to="/odom" /> 
+		<remap from="/undistort_laser" to="/points" /> 
+		<remap from="/rgb_pts" to="/rgb_pts" /> 
+    </node>
+
+	
+</launch>
