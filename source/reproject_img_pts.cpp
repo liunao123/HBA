@@ -184,8 +184,8 @@ namespace DetectandTract{
             // std::cout << __FILE__ <<":" << __LINE__ <<  std::endl << i_params.RT << std::endl;
 
             cv::Point pt;
-            pt.x = Y.at<double>(0, 0) / Y.at<double>(0, 2);
-            pt.y = Y.at<double>(1, 0) / Y.at<double>(0, 2);
+            pt.x = std::round (Y.at<double>(0, 0) / Y.at<double>(0, 2) );
+            pt.y = std::round (Y.at<double>(0, 1) / Y.at<double>(0, 2) );
             // std::cout << "pixel: " << pt.y << " " << pt.x << std::endl;
 
             // 移除边缘的点
@@ -241,9 +241,14 @@ namespace DetectandTract{
         image_publisher.publish(cv_ptr->toImageMsg());
         // std::cout << "project picture is published!" << std::endl;
 
+        sensor_msgs::PointCloud2 wpts;
         // 判断是否有 pose 有的话就将rgb点云转到world坐标系
-        if ( pose_buffer.empty() )
+        if (pose_buffer.empty())
         {
+            // 上色后的点云 坐标系没变 lidar
+            pcl::toROSMsg(*rgb_pts_cloud, wpts);
+            wpts.header = pc->header;
+            pubLaserCloudFullRes.publish(wpts); // Append the world-frame point cloud to the output.
             return;
         }
         else
@@ -269,10 +274,6 @@ namespace DetectandTract{
             }
         }
         
-        if ( pose_buffer.empty() )
-        {
-            return;
-        }
         auto pose_msg = pose_buffer.front();
 
         ROS_WARN_ONCE("project pts with pose :");
@@ -350,15 +351,9 @@ namespace DetectandTract{
         //     ROS_WARN("world rgb pts size: %ld .", world_rgb_pts.points.size());
         // }
 
-        sensor_msgs::PointCloud2 wpts;
-        // pcl::toROSMsg(world_rgb_pts, wpts);
+        // sensor_msgs::PointCloud2 wpts;
         pcl::toROSMsg(scan_world, wpts);
-        wpts.header = pose_msg->header;
-
-        // 上色后的点云 坐标系没变 lidar
-        // pcl::toROSMsg(*rgb_pts_cloud, wpts);
-        // wpts.header = pc->header;
-        
+        wpts.header = pose_msg->header;       
         pubLaserCloudFullRes.publish(wpts); // Append the world-frame point cloud to the output.
 
     }
@@ -387,11 +382,11 @@ namespace DetectandTract{
 
         subPose = nh.subscribe( i_params.pose_topic , 10000, &projector::pose_callback, this);
 
-        typedef message_filters::sync_policies::ExactTime<sensor_msgs::Image, sensor_msgs::PointCloud2>
-            MySyncPolicy_pts_img;
-
-        // typedef message_filters::sync_policies::ApproximateTime<sensor_msgs::Image, sensor_msgs::PointCloud2>
+        // typedef message_filters::sync_policies::ExactTime<sensor_msgs::Image, sensor_msgs::PointCloud2>
         //     MySyncPolicy_pts_img;
+
+        typedef message_filters::sync_policies::ApproximateTime<sensor_msgs::Image, sensor_msgs::PointCloud2>
+            MySyncPolicy_pts_img;
 
         // 创建消息同步器，并将订阅器和回调函数绑定到同步器上
         message_filters::Synchronizer<MySyncPolicy_pts_img> sync_pts_img(MySyncPolicy_pts_img(10000), image_sub, pcl_sub );

@@ -119,6 +119,7 @@ const std::pair< PointCloudXYZRGB::Ptr , cv::Mat >  projection_img_pts_callback(
     cv::Mat cameraMatrix = i_params.cameraIn(cv::Rect(0, 0, 3, 3));
     // std::cout << cameraMatrix << std::endl;
     cv::Mat distortionCoeffs = (cv::Mat_<double>(1, 4) << i_params.cam_d0, i_params.cam_d1, i_params.cam_d2, i_params.cam_d3);
+    // cv::Mat distortionCoeffs = (cv::Mat_<double>(1, 4) << 0, 0, 0, 0);
     // std::cout << distortionCoeffs << std::endl;
 
     // 进行畸变矫正
@@ -140,20 +141,20 @@ const std::pair< PointCloudXYZRGB::Ptr , cv::Mat >  projection_img_pts_callback(
     cv::Mat X(4, 1, cv::DataType<double>::type);
     cv::Mat Y(4, 1, cv::DataType<double>::type);
 
-    float maxX = 50;
-    float maxY = 30;
+    float maxX = 250;
+    float maxY = 100;
     float minZ = -20;
 
-    std::cout << __FILE__ <<":" << __LINE__ << " points size:  " << rgb_pts_cloud->points.size() << std::endl;
+    // std::cout << __FILE__ <<":" << __LINE__ << " points size:  " << rgb_pts_cloud->points.size() << std::endl;
 
     int rgb_cnts = 0;
     for (pcl::PointCloud<pcl::PointXYZI>::const_iterator it = cloud->points.begin(); it != cloud->points.end(); it++)
     {
         // if (it->x > maxX || it->x < 0.0 || abs(it->y) > maxY || it->z < minZ)
-        if (it->x > maxX || it->x < 0.0 || it->z < minZ)
-        {
-            continue;
-        }
+        // if (it->x > maxX || it->x < 0.0 || abs(it->y) > maxY || it->z < minZ)
+        // {
+        //     continue;
+        // }
 
         if ( std::fabs( std::atan2(it->y, it->x) ) > M_PI_4  )  // -45 to 45 degree
         {
@@ -170,12 +171,37 @@ const std::pair< PointCloudXYZRGB::Ptr , cv::Mat >  projection_img_pts_callback(
         X.at<double>(2, 0) = it->z;
         X.at<double>(3, 0) = 1;
 
+        std::vector<cv::Point3f> pts_3d;
+        pts_3d.resize(1);
+        std::vector<cv::Point2f> pts_2d;
+
+        cv::Point3f p3;
+        p3.x = it->x;
+        p3.y = it->y;
+        p3.z = it->z;
+
+        pts_3d[0] = p3;
+
+        cv::Mat cv_r_vec = i_params.RT(cv::Rect(0, 0, 3, 3) ) ;  
+        cv::Mat cv_t_vec = i_params.RT(cv::Rect(3, 0, 1, 3) ) ;  
+        cv::projectPoints(pts_3d, cv_r_vec, cv_t_vec, cameraMatrix, distortionCoeffs, pts_2d);
+
         Y = i_params.cameraIn * i_params.RT * X; // tranform the point to the camera coordinate
 
         cv::Point pt;
-        pt.x = Y.at<double>(0, 0) / Y.at<double>(0, 2);
-        pt.y = Y.at<double>(1, 0) / Y.at<double>(0, 2);
-        // std::cout << "pixel: " << pt.y << " " << pt.x << std::endl;
+        pt.x = std::round (Y.at<double>(0, 0) / Y.at<double>(0, 2) );
+        pt.y = std::round (Y.at<double>(0, 1) / Y.at<double>(0, 2) );
+
+        // if (rgb_cnts % 100000 == 0)
+        // {
+            // std::cout << "pixel def : " << pt.y << " " << pt.x << std::endl;
+            // std::cout << "pixel cv  : " << pts_2d[0].y << " " << pts_2d[0].x << std::endl;
+            // std::cout << "cv_r_vec  : " << cv_r_vec << std::endl;
+            // std::cout << "cv_t_vec  : " << cv_t_vec << std::endl;
+        // }
+
+        // pt.y = pts_2d[0].y;
+        // pt.x = pts_2d[0].x;
 
         // 移除边缘的点
         const int remove_pixel_thres = 2;
@@ -210,16 +236,20 @@ const std::pair< PointCloudXYZRGB::Ptr , cv::Mat >  projection_img_pts_callback(
         // rgb_pts_cloud->push_back(pointRGB);
         rgb_pts_cloud->points[rgb_cnts++]  = pointRGB ;
 
-        if (rgb_cnts % ( cloud->points.size() / 100000 ) )
+        // if (cloud->points.size() > 10000)
+        // {
+        // // if (rgb_cnts % ( cloud->points.size() / 10000 ) )
         // if ( rgb_cnts % 10000 )
-        {
-            continue;
-        }
+        // {
+        //     continue;
+        // }
+        // }
 
         float val = it->x;
-        int red = std::min(255, (int)(255 * abs((val - maxX) / maxX)));
-        int green = std::min(255, (int)(255 * (1 - abs((val - maxX) / maxX))));
-        cv::circle(overlay, pt, 3, cv::Scalar(0, green, red), -1);
+        const float maxX_color = 30;
+        int red = std::min(255, (int)(255 * abs((val - maxX_color) / maxX_color)));
+        int green = std::min(255, (int)(255 * (1 - abs((val - maxX_color) / maxX_color))));
+        cv::circle(overlay, pt, 1, cv::Scalar(0, green, red), -1);
     }
     std::cout << __FILE__ <<":" << __LINE__ << " rgb_cnts:  " << rgb_cnts << std::endl;
     rgb_pts_cloud->points.resize(rgb_cnts);
@@ -262,16 +292,23 @@ int main(int argc, char **argv)
 
     for (size_t i = 0; i < PCD_NUM; i++ )
     {
-        std::string image_file = data_path + "/" + std::to_string(i)  + ".png" ;
+        std::string image_file = data_path + "/" + std::to_string(i)  + ".jpg" ;
+        std::ifstream file(image_file);
+        if ( !file.good() )
+        {
+            image_file = data_path + "/" + std::to_string(i)  + ".png" ;
+        }
         std::string pcd_file = data_path + "/" + std::to_string(i)  + ".pcd" ;
         std::string rgb_pcd_file = data_path + "/" + std::to_string(i)  + "_rgb.pcd" ;
+        std::string pts_img_file = data_path + "/" + std::to_string(i)  + "_rgb.jpg" ;
         ROS_WARN("loading %s . ", pcd_file.c_str());
+        ROS_WARN("loading %s . ", image_file.c_str());
 
         try
         {
             auto rgb_ponts_and_img = projection_img_pts_callback(pcd_file, image_file);
             pcl::io::savePCDFile(rgb_pcd_file, *( rgb_ponts_and_img.first ) );
-            ROS_WARN("saving %s . then publish rgb pts. ", rgb_pcd_file.c_str());
+            ROS_WARN("saving %s . then publish rgb pts. \n\n\n", rgb_pcd_file.c_str());
             sensor_msgs::PointCloud2 wpts;
             // 上色后的点云 坐标系没变 lidar
             pcl::toROSMsg(*( rgb_ponts_and_img.first ), wpts);
@@ -282,8 +319,9 @@ int main(int argc, char **argv)
             sensor_msgs::ImagePtr msg = cv_bridge::CvImage(std_msgs::Header(), "bgr8",  rgb_ponts_and_img.second ).toImageMsg();
             msg->header.stamp = ros::Time::now();
             msg->header.frame_id = "camera";
-            ROS_INFO("time %lf", msg->header.stamp.toSec());  
+            // ROS_INFO("time %lf", msg->header.stamp.toSec());
             image_publisher.publish( *msg );
+            cv::imwrite(pts_img_file, rgb_ponts_and_img.second );
 
         }
         catch(const std::exception& e)

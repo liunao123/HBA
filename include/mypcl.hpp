@@ -13,8 +13,8 @@
 typedef std::vector<Eigen::Vector3d, Eigen::aligned_allocator<Eigen::Vector3d> > vector_vec3d;
 typedef std::vector<Eigen::Quaterniond, Eigen::aligned_allocator<Eigen::Quaterniond> > vector_quad;
 // typedef pcl::PointXYZINormal PointType;
-// typedef pcl::PointXYZ PointType;
-typedef pcl::PointXYZRGB PointType;
+typedef pcl::PointXYZI PointType;
+// typedef pcl::PointXYZRGB PointType;
 typedef Eigen::Matrix<double, 6, 6> Matrix6d;
 std::vector<double> st_pose;
 
@@ -66,15 +66,24 @@ namespace mypcl
     file.open(filename);
     double tx, ty, tz, w, x, y, z;
     double st;
+    std::string header;
     std::cout << "pose filename is " << filename << std::endl;
     while(!file.eof())
     {
+      if (filename.back() == 'o')
+      {
+      file  >> header;
+      ROS_WARN("header %s  ", header.c_str());
+      if(header != "VERTEX_SE3:QUAT")
+      {
+        continue;
+      }
+      }
       file  >> st >> tx >> ty >> tz  >> x >> y >> z >> w;
       Eigen::Quaterniond q(w, x, y, z);
       Eigen::Vector3d t(tx, ty, tz);
       pose_vec.push_back(pose(qe * q, qe * t + te));
       st_pose.push_back(st);
-      // ROS_WARN("st %f , w %f", st, w);
       // ros::Duration(1).sleep();
     }
     file.close();
@@ -145,9 +154,9 @@ namespace mypcl
       pt_out.points[i].x = pt_to.x();
       pt_out.points[i].y = pt_to.y();
       pt_out.points[i].z = pt_to.z();
-      pt_out.points[i].r = pc_in.points[i].r;
-      pt_out.points[i].g = pc_in.points[i].g;
-      pt_out.points[i].b = pc_in.points[i].b;
+      // pt_out.points[i].r = pc_in.points[i].r;
+      // pt_out.points[i].g = pc_in.points[i].g;
+      // pt_out.points[i].b = pc_in.points[i].b;
     }
   }
 

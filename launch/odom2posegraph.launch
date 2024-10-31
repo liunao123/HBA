@@ -1,12 +1,13 @@
 <launch>
 	<arg name="rviz" default="true" />
  
+    <param name="data_path" type=" string " value="/home/map/vanjee/"/>
 	<node pkg="hba" type="odom2posegraph" name="odom2posegraph" output="screen"  required="false" >
 	    <!-- odom里面需要速度信息 -->
-		<remap from="/lidar_odom" to="/odom" /> 
-		<remap from="/undistort_laser" to="/points" /> 
-		<remap from="/rgb_pts" to="/rgb_pts" /> 
+		<!-- <remap from="/lidar_odom" to="/odom" /> 
+		<remap from="/undistort_laser" to="/points" />  -->
     </node>
 
+    <!-- <node pkg="rosbag" name="rosbag11" type="play" output="log" args="/home/bag/sync/v1_avia_hk/v1_avia_hk_sync_2024-04-29-14-06-04_office.bag -r 1 -d  3 -s 10 "/> -->
 	
 </launch>

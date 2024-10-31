@@ -27,8 +27,6 @@
 #include <math.h>
 #include <rosbag/bag.h>
 
-#include "ba.hpp"
-#include "tools.hpp"
 #include "mypcl.hpp"
 #include <thread>
 
@@ -167,7 +165,7 @@ int main(int argc, char** argv)
   // outrem.setRadiusSearch(0.2);
   // outrem.setMinNeighborsInRadius(1);
 
-  range = 20.0;
+  range = 120.0;
   cropBoxFilter_temp.setMin(Eigen::Vector4f(-range, -range, -range, 1.0f));
   cropBoxFilter_temp.setMax(Eigen::Vector4f(range, range, range, 1.0f));
   i = pcd_start_index;
@@ -333,10 +331,10 @@ int main(int argc, char** argv)
     marker_txt.color.b = 1.0f;
     marker_txt.color.a = 1.0;
     marker_txt.lifetime = ros::Duration();
-    if(i%GAP == 0) markerArray.markers.push_back(marker_txt);
+    if(i%5 == 0) markerArray.markers.push_back(marker_txt);
     pub_pose_number.publish(markerArray);
 
-    ros::Duration(0.01).sleep();
+    ros::Duration(0.001).sleep();
   }
   ROS_WARN("pub end:");
 
@@ -361,14 +359,14 @@ int main(int argc, char** argv)
     ROS_WARN("save map end:");
   }
 
-  ros::Rate loop_rate(1);
-  while(ros::ok())
-  {
-    ros::spinOnce();
-    loop_rate.sleep();
-  }
+  // ros::Rate loop_rate(1);
+  // while(ros::ok())
+  // {
+  //   ros::spinOnce();
+  //   loop_rate.sleep();
+  // }
   ROS_WARN("exit......");
   exit_flag = true;
-  myThread.join();
-  
+  // myThread.join();
+  return 0;
 }

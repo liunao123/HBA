@@ -30,7 +30,8 @@
 
 #include <Eigen/Dense>
 
-typedef pcl::PointXYZRGB PointTypeRGB;
+// typedef pcl::PointXYZRGB PointTypeRGB;
+typedef pcl::PointXYZI  PointTypeRGB;
 typedef pcl::PointCloud<PointTypeRGB> PointCloudXYZRGB;
 
 bool exit_flag = false;
@@ -55,12 +56,12 @@ void odomCallback(const nav_msgs::Odometry::ConstPtr &msg)
 {
     // static std::ofstream outfile("./pose_graph_f.g2o", std::ios::app);
     // static std::ofstream outfile_edge("./pose_graph_edge_f.g2o", std::ios::app);
-    static geometry_msgs::Pose last_pose = msg->pose.pose;
+    static nav_msgs::Odometry::ConstPtr last_odom = msg;
 
     static const double period_time = 0.1;
     
-    outfile.open("./pose_graph.g2o", std::ios::app);
-    outfile_edge.open("./pose_graph_edge.g2o", std::ios::app);
+    outfile.open("/home/pose_graph.g2o", std::ios::app);
+    outfile_edge.open("/home/pose_graph_edge.g2o", std::ios::app);
 
     if (vertex_id == 0)
     {
@@ -103,12 +104,57 @@ void odomCallback(const nav_msgs::Odometry::ConstPtr &msg)
                  << " 1000 0 0 0 0 0 1000 0 0 0 0 1000 0 0 0 4000 0 0 4000 0 4000"
                  << std::endl;
 
-    // Update vertex id and last pose
-    last_pose = msg->pose.pose;
+    // 第 0 个点云 应该没有 ，对应的位姿 是 0
+    vertex_id++;
+
+    Eigen::Quaterniond quat_now(msg->pose.pose.orientation.w, msg->pose.pose.orientation.x, msg->pose.pose.orientation.y, msg->pose.pose.orientation.z);
+    Eigen::Matrix3d m3d_now = quat_now.matrix();
+
+    Eigen::Quaterniond quat_last(last_odom->pose.pose.orientation.w, last_odom->pose.pose.orientation.x, last_odom->pose.pose.orientation.y, last_odom->pose.pose.orientation.z);
+    Eigen::Matrix3d m3d_last = quat_last.matrix();
+    
+    Eigen::Vector3d t_last(last_odom->pose.pose.position.x, last_odom->pose.pose.position.y, last_odom->pose.pose.position.z);
+    Eigen::Vector3d last_delta_p( last_odom->twist.twist.linear.x, last_odom->twist.twist.linear.y, last_odom->twist.twist.linear.z ) ;
+    last_delta_p = last_delta_p * period_time;
+
+    Eigen::Vector3d t_est =  quat_last * delta_p +  t_last ;
     
     outfile.close();
     outfile_edge.close();
-    
+
+    // save data file
+    std::stringstream ss;
+    ss << std::setw(6) << std::setfill('0') << vertex_id;
+    std::string one_path = data_path + "pose_graph/" + ss.str();
+    // ROS_WARN( "data_path is %s " , one_path.c_str() );
+    system(("mkdir -p " + one_path).c_str());
+    std::ofstream pose_data( one_path + "/data", std::ios::out);
+    pose_data
+        << "stamp " << int( msg->header.stamp.sec  ) << " " << int( msg->header.stamp.nsec ) << std::endl // 一定要是 int 的 time
+        <<  "estimate" << std::endl << std::fixed << std::setprecision(10)
+        // << m3d_now(0) << " " << m3d_now(1) << " " << m3d_now(2) << " " << msg->pose.pose.position.x << std::endl
+        // << m3d_now(3) << " " << m3d_now(4) << " " << m3d_now(5) << " " << msg->pose.pose.position.y << std::endl
+        // << m3d_now(6) << " " << m3d_now(7) << " " << m3d_now(8) << " " << msg->pose.pose.position.z << std::endl
+        
+        << m3d_last(0) << " " << m3d_last(1) << " " << m3d_last(2) << " " << t_est(0) << std::endl
+        << m3d_last(3) << " " << m3d_last(4) << " " << m3d_last(5) << " " << t_est(1) << std::endl
+        << m3d_last(6) << " " << m3d_last(7) << " " << m3d_last(8) << " " << t_est(2) << std::endl
+
+        << "0 0 0 1" << std::endl
+        << "odom" << std::endl
+        // << m3d_last(0) << " " << m3d_last(1) << " " << m3d_last(2) << " " << t_est(0) << std::endl
+        // << m3d_last(3) << " " << m3d_last(4) << " " << m3d_last(5) << " " << t_est(1) << std::endl
+        // << m3d_last(6) << " " << m3d_last(7) << " " << m3d_last(8) << " " << t_est(2) << std::endl
+        << m3d_now(0) << " " << m3d_now(1) << " " << m3d_now(2) << " " << msg->pose.pose.position.x << std::endl
+        << m3d_now(3) << " " << m3d_now(4) << " " << m3d_now(5) << " " << msg->pose.pose.position.y << std::endl
+        << m3d_now(6) << " " << m3d_now(7) << " " << m3d_now(8) << " " << msg->pose.pose.position.z << std::endl
+        << "0 0 0 1" << std::endl
+        // << "accum_distance -1" << std::endl
+        << "id " << vertex_id << std::endl;
+    pose_data.close();
+
+    // Update vertex id and last pose
+    last_odom = msg;
 }
 
 void ptsCallback(const sensor_msgs::PointCloud2::ConstPtr &pts)
@@ -116,13 +162,10 @@ void ptsCallback(const sensor_msgs::PointCloud2::ConstPtr &pts)
     pcl::PointCloud<pcl::PointXYZI>::Ptr cloud(new pcl::PointCloud<pcl::PointXYZI>);
     pcl::fromROSMsg(*pts, *cloud);
 
-    // 第 0 个点云 应该没有 ，对应的位姿 是 0
-    vertex_id++;
-
     std::stringstream ss;
     ss << std::setw(6) << std::setfill('0') << vertex_id;
     std::string one_path = data_path + "pose_graph/" + ss.str();
-    system(("mkdir -p " + one_path).c_str());
+    // system(("mkdir -p " + one_path).c_str());
     pcl::io::savePCDFile(one_path + "/cloud.pcd", *cloud);
 
 }
@@ -140,12 +183,15 @@ int main(int argc, char **argv)
 
     signal(SIGINT, signal_callback_handler);
 
-    // std::string rm_cmd =  "rm ./pose_graph.g2o  ./pose_graph_edge.g2o ";
-    // system( rm_cmd.c_str());
+    std::string rm_cmd =  "rm /home/pose_graph.g2o  /home/pose_graph_edge.g2o ";
+    system( rm_cmd.c_str());
 
     ros::NodeHandle nh;
-
-    ros::Publisher pubLaserCloudFullRes = nh.advertise<sensor_msgs::PointCloud2>("/rgb_pts", 10000);
+    nh.getParam("data_path", data_path);
+    sleep(3); // second s
+    ROS_WARN(" remove %s .", data_path.c_str());
+    system(("rm -r " + data_path).c_str());
+    system(("mkdir -p " + data_path + "pose_graph/").c_str());
 
     message_filters::Subscriber<sensor_msgs::PointCloud2> pcl_sub(nh, "/undistort_laser", 10000);
     message_filters::Subscriber<nav_msgs::Odometry> odom_sub(nh, "/lidar_odom", 10000);
@@ -163,9 +209,9 @@ int main(int argc, char **argv)
     }
 
     std::string g2o_path = data_path + "pose_graph/graph.g2o";
-    std::string new_cmd =  "cat ./pose_graph.g2o >>  " + g2o_path;
+    std::string new_cmd =  "cat /home/pose_graph.g2o >>  " + g2o_path;
     // new_cmd = new_cmd +  " &&  echo \"\" >> " + g2o_path;
-    new_cmd = new_cmd +  " &&  cat ./pose_graph_edge.g2o >>  " + g2o_path;
+    new_cmd = new_cmd +  " &&  cat /home/pose_graph_edge.g2o >>  " + g2o_path;
 
     system( new_cmd.c_str());
     // ROS_WARN( "Cmd is %s" , new_cmd.c_str() );

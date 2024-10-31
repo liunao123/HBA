@@ -75,3 +75,6 @@ target_link_libraries(project_points2img_offine ${catkin_LIBRARIES}  ${OpenCV_LI
 
 add_executable(odom2posegraph source/odom2posegraph.cpp)
 target_link_libraries(odom2posegraph ${catkin_LIBRARIES}  ${PCL_LIBRARIES} )
+
+add_executable(get_camera_pose source/get_camera_pose.cpp)
+target_link_libraries(get_camera_pose ${catkin_LIBRARIES} ${PCL_LIBRARIES})
