@@ -160,27 +160,8 @@ namespace mypcl
     }
   }
 
-  pcl::PointCloud<pcl::PointXYZRGB>::Ptr append_cloud(pcl::PointCloud<pcl::PointXYZRGB>::Ptr pc1,
-                                                      pcl::PointCloud<pcl::PointXYZRGB> pc2)
-  {
-    size_t size1 = pc1->points.size();
-    size_t size2 = pc2.points.size();
-    pc1->points.resize(size1 + size2);
-    for(size_t i = size1; i < size1 + size2; i++)
-    {
-      pc1->points[i].x = pc2.points[i-size1].x;
-      pc1->points[i].y = pc2.points[i-size1].y;
-      pc1->points[i].z = pc2.points[i-size1].z;
-      pc1->points[i].r = pc2.points[i-size1].r;
-      pc1->points[i].g = pc2.points[i-size1].g;
-      pc1->points[i].b = pc2.points[i-size1].b;
-      // pc1->points[i].intensity = pc2.points[i-size1].intensity;
-    }
-    return pc1;
-  }
-
-  // pcl::PointCloud<PointType>::Ptr append_cloud(pcl::PointCloud<PointType>::Ptr pc1,
-  //                                              pcl::PointCloud<PointType> pc2)
+  // pcl::PointCloud<pcl::PointXYZRGB>::Ptr append_cloud(pcl::PointCloud<pcl::PointXYZRGB>::Ptr pc1,
+  //                                                     pcl::PointCloud<pcl::PointXYZRGB> pc2)
   // {
   //   size_t size1 = pc1->points.size();
   //   size_t size2 = pc2.points.size();
@@ -190,13 +171,32 @@ namespace mypcl
   //     pc1->points[i].x = pc2.points[i-size1].x;
   //     pc1->points[i].y = pc2.points[i-size1].y;
   //     pc1->points[i].z = pc2.points[i-size1].z;
-  //     // pc1->points[i].r = pc2.points[i-size1].r;
-  //     // pc1->points[i].g = pc2.points[i-size1].g;
-  //     // pc1->points[i].b = pc2.points[i-size1].b;
+  //     pc1->points[i].r = pc2.points[i-size1].r;
+  //     pc1->points[i].g = pc2.points[i-size1].g;
+  //     pc1->points[i].b = pc2.points[i-size1].b;
   //     // pc1->points[i].intensity = pc2.points[i-size1].intensity;
   //   }
   //   return pc1;
   // }
+
+  pcl::PointCloud<PointType>::Ptr append_cloud(pcl::PointCloud<PointType>::Ptr pc1,
+                                               pcl::PointCloud<PointType> pc2)
+  {
+    size_t size1 = pc1->points.size();
+    size_t size2 = pc2.points.size();
+    pc1->points.resize(size1 + size2);
+    for(size_t i = size1; i < size1 + size2; i++)
+    {
+      pc1->points[i].x = pc2.points[i-size1].x;
+      pc1->points[i].y = pc2.points[i-size1].y;
+      pc1->points[i].z = pc2.points[i-size1].z;
+      // pc1->points[i].r = pc2.points[i-size1].r;
+      // pc1->points[i].g = pc2.points[i-size1].g;
+      // pc1->points[i].b = pc2.points[i-size1].b;
+      pc1->points[i].intensity = pc2.points[i-size1].intensity;
+    }
+    return pc1;
+  }
 
   double compute_inlier_ratio(std::vector<double> residuals, double ratio)
   {

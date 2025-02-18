@@ -31,6 +31,7 @@ find_package(catkin REQUIRED COMPONENTS
   message_generation
   cmake_modules
   dynamic_reconfigure
+  livox_ros_driver
 )
 find_package(OpenCV REQUIRED)
 
@@ -78,3 +79,14 @@ target_link_libraries(odom2posegraph ${catkin_LIBRARIES}  ${PCL_LIBRARIES} )
 
 add_executable(get_camera_pose source/get_camera_pose.cpp)
 target_link_libraries(get_camera_pose ${catkin_LIBRARIES} ${PCL_LIBRARIES})
+
+
+add_executable(shadow_filter source/shadow_filter.cpp)
+target_link_libraries(shadow_filter ${catkin_LIBRARIES}  ${PCL_LIBRARIES} )
+
+add_executable(get_lidar_intensity_image source/get_lidar_intensity_image.cpp)
+target_link_libraries(get_lidar_intensity_image ${catkin_LIBRARIES}  ${OpenCV_LIBRARIES}  ${PCL_LIBRARIES} )
+
+
+add_executable(test_opencv source/test_opencv.cpp)
+target_link_libraries(test_opencv ${catkin_LIBRARIES}  ${OpenCV_LIBRARIES}  ${PCL_LIBRARIES} )

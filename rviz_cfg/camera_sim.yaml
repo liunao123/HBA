@@ -1,0 +1,22 @@
+cam_model: Pinhole
+cam_width: 1024
+cam_height: 1024
+
+# # 平均值
+cam_fx: 1024
+cam_fy: 1024
+cam_cx: 512
+cam_cy: 512
+cam_d0: 0
+cam_d1: 0
+cam_d2: 0
+cam_d3: 0
+
+camera:
+    Rcl: [ 0 , -1 ,  0 ,
+           0 ,  0 , -1 ,
+           1 ,  0 ,  0 ]
+    Pcl: [ 0,  0,  0]
+
+data_path: /home/liunao/Kalibr/v1_20241118/temp
+PCD_NUM : 8

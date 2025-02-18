@@ -3,6 +3,7 @@
 #include <fstream>
 #include <iostream>
 #include <csignal>
+#include <signal.h>
 
 #include <pcl/point_cloud.h>
 #include <pcl/point_types.h>
@@ -39,12 +40,8 @@ size_t i = 0;
 
 int threadFunction()
 {
-    while ( ros::ok() )
+    while ( !exit_flag )
     {
-        if ( exit_flag )
-        {
-          break;
-        }
         // std::cout << "按下 Enter 键暂停循环，再次按下 Enter 键继续，或输入 'q' 退出：" << std::endl;
         int c = getchar();
         if (c == '\n')
@@ -52,22 +49,26 @@ int threadFunction()
           stop = !stop;
           std::cout << "stop is " << stop << " . at : " << i <<  std::endl;
         }
-        // if ( c == ' ')
-        // {
-        //   std::cout << "break exit() " << std::endl;
-        //   break;
-        // }
-        ros::Duration(0.01).sleep();
+        if (c == 'q')
+        {
+          exit_flag = true;
+          std::cout << "exit ... ... " << std::endl;
+        }
+        // ros::Duration(0.5).sleep();
+        sleep(500);
     }
     std::cout << "threadFunction exit ." << std::endl;
 }
 
 void signal_callback_handler(int signum)
 {
-  exit_flag = true;
-  std::cout << "Caught signal, EXIT " << signum << std::endl;
-  // Terminate program
-  exit(signum);
+  if (signum == SIGINT)
+  {
+    exit_flag = true;
+    std::cout << "Caught signal, EXIT " << signum << std::endl;
+    // Terminate program
+    exit(signum);
+  }
 }
 
 int main(int argc, char** argv)
@@ -77,6 +78,7 @@ int main(int argc, char** argv)
   ros::NodeHandle nh("~");
 
   std::thread myThread(threadFunction);
+  myThread.detach();
 
   ros::Publisher pub_map = nh.advertise<sensor_msgs::PointCloud2>("/cloud_map", 100);
   ros::Publisher pub_debug = nh.advertise<sensor_msgs::PointCloud2>("/cloud_debug", 100);
@@ -157,6 +159,7 @@ int main(int argc, char** argv)
   // cout<<"push enter to view"<<endl;
   // getchar();
   usleep(2000*1000);
+  // ros::Duration(2).sleep();
   pcl::PointCloud<PointType> global_map;
 
   float range = 1.0;
@@ -169,6 +172,9 @@ int main(int argc, char** argv)
   cropBoxFilter_temp.setMin(Eigen::Vector4f(-range, -range, -range, 1.0f));
   cropBoxFilter_temp.setMax(Eigen::Vector4f(range, range, range, 1.0f));
   i = pcd_start_index;
+
+  ros::Rate  rate(10);
+
   for( ; i < pcd_end_index ; i++)
   {
     if ( stop )
@@ -193,12 +199,20 @@ int main(int argc, char** argv)
       ROS_INFO("read %0.1f% , %ldth file , total %ld  . ", float(100.0*i / pcd_end_index) , i , pcd_end_index );
     }
 
-    // if( i > 550  && i < 570 ) continue;
+    if( i > 1  && i < pcd_end_index ) 
+    {
+      if( std::fabs( pose_vec[i].t(2) - pose_vec[i-1].t(2) ) > 0.1 && std::fabs( pose_vec[i].t(2) - pose_vec[i+1].t(2) ) > 0.1)
+      {
+        continue;
+      }
+    }
 
-    // if( i > 3500  && i < 8000 ) continue;
+    // if( i > 200  && i < 2100 ) continue;
+
+    // if( i > 2300  && i < 4200 ) continue;
 
 
-    // if( i > 3930  && i < 4140 ) continue;
+    // if( i > 4300  && i < 6330 ) continue;
     // if( i > 5000  && i < 5130 ) continue;
     // if( i > 6000  && i < 6130 ) continue;
     // if( i > 6950  && i < 7000 ) continue;
@@ -333,8 +347,8 @@ int main(int argc, char** argv)
     marker_txt.lifetime = ros::Duration();
     if(i%5 == 0) markerArray.markers.push_back(marker_txt);
     pub_pose_number.publish(markerArray);
-
-    ros::Duration(0.001).sleep();
+    usleep(10*1000);
+    // rate.sleep();
   }
   ROS_WARN("pub end:");
 
@@ -367,6 +381,6 @@ int main(int argc, char** argv)
   // }
   ROS_WARN("exit......");
   exit_flag = true;
-  // myThread.join();
+
   return 0;
 }
