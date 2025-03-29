@@ -31,6 +31,8 @@
 #include "mypcl.hpp"
 #include <thread>
 
+typedef pcl::PointXYZRGBA PointTypeXYZRGBI;
+
 using namespace std;
 using namespace Eigen;
 
@@ -55,7 +57,7 @@ int threadFunction()
           std::cout << "exit ... ... " << std::endl;
         }
         // ros::Duration(0.5).sleep();
-        sleep(500);
+         usleep(500 * 1000);
     }
     std::cout << "threadFunction exit ." << std::endl;
 }
@@ -147,7 +149,7 @@ int main(int argc, char** argv)
 
   cout<<"pcd_end_index "<< pcd_end_index <<endl;
 
-  pcl::PointCloud<PointType>::Ptr pc_surf(new pcl::PointCloud<PointType>);
+  pcl::PointCloud<PointTypeXYZRGBI>::Ptr pc_surf(new pcl::PointCloud<PointTypeXYZRGBI>);
   // pcl::PointCloud<pcl::PointXYZRGB>::Ptr color_full(new pcl::PointCloud<pcl::PointXYZRGB>);
 
   ros::Time cur_t;
@@ -160,15 +162,15 @@ int main(int argc, char** argv)
   // getchar();
   usleep(2000*1000);
   // ros::Duration(2).sleep();
-  pcl::PointCloud<PointType> global_map;
+  pcl::PointCloud<PointTypeXYZRGBI> global_map;
 
-  float range = 1.0;
-  pcl::CropBox<PointType> cropBoxFilter_temp(true);
-  // pcl::RadiusOutlierRemoval<PointType> outrem;
+  float range = 1.50;
+  pcl::CropBox<PointTypeXYZRGBI> cropBoxFilter_temp(true);
+  // pcl::RadiusOutlierRemoval<PointTypeXYZRGBI> outrem;
   // outrem.setRadiusSearch(0.2);
   // outrem.setMinNeighborsInRadius(1);
 
-  range = 120.0;
+  // range = 120.0;
   cropBoxFilter_temp.setMin(Eigen::Vector4f(-range, -range, -range, 1.0f));
   cropBoxFilter_temp.setMax(Eigen::Vector4f(range, range, range, 1.0f));
   i = pcd_start_index;
@@ -225,7 +227,17 @@ int main(int argc, char** argv)
     // if( i > 7400  && i < 7500 ) continue;
 
     pc_surf->points.clear();
-    mypcl::loadPCD(data_path + "pose_graph/", pcd_name_fill_num, pc_surf, i );
+    
+    // mypcl::loadPCD(data_path + "pose_graph/", pcd_name_fill_num, pc_surf, i );
+
+    std::stringstream ss;
+    if (pcd_name_fill_num > 0)
+      ss << std::setw(pcd_name_fill_num) << std::setfill('0') << i;
+    else
+      ss << i;
+    std::string pcd_st = data_path + "pose_graph/" + ss.str() + "/cloud.pcd";
+    pcl::io::loadPCDFile(pcd_st, *pc_surf);
+
     // ROS_WARN("pc_surf : %d ", pc_surf->points.size() );
     // 第 0 个点云 应该没有 ，对应的位姿 是 0
     if( pc_surf->points.empty() )
@@ -233,11 +245,11 @@ int main(int argc, char** argv)
       continue;
     }
 
-    pcl::PointCloud<PointType>::Ptr pc_filtered(new pcl::PointCloud<PointType>);
+    pcl::PointCloud<PointTypeXYZRGBI>::Ptr pc_filtered(new pcl::PointCloud<PointTypeXYZRGBI>);
     pc_filtered->resize(pc_surf->points.size());
 
-    // cropBoxFilter_temp.setNegative(true);  // 保留 range 之外的 点
-    cropBoxFilter_temp.setNegative(false);  // 保留 range 之内的 点
+    cropBoxFilter_temp.setNegative(true);  // 保留 range 之外的 点
+    // cropBoxFilter_temp.setNegative(false);  // 保留 range 之内的 点
     cropBoxFilter_temp.setInputCloud(pc_surf);
     cropBoxFilter_temp.filter(*pc_filtered);
     // *pc_filtered = *pc_surf;
@@ -246,7 +258,15 @@ int main(int argc, char** argv)
     // // apply filter
     // outrem.filter(*pc_filtered);
     // pose_vec[i].t(2) = 0;
-    mypcl::transform_pointcloud(*pc_filtered, *pc_filtered, pose_vec[i].t, pose_vec[i].q);
+    // mypcl::transform_pointcloud(*pc_filtered, *pc_filtered, pose_vec[i].t, pose_vec[i].q);
+
+    Eigen::Matrix4d key_pose = Eigen::Matrix4d::Identity();
+    // 将四元数转换为旋转矩阵并填充变换矩阵
+    key_pose.block<3, 3>(0, 0) = pose_vec[i].q.toRotationMatrix();
+    // 设置平移部分
+    key_pose.block<3, 1>(0, 3) = pose_vec[i].t;
+    pcl::transformPointCloud(*pc_filtered, *pc_filtered, key_pose);
+
 
     if(save_global_map)
     {
@@ -354,10 +374,28 @@ int main(int argc, char** argv)
 
   if( save_global_map && global_map.size() )
   {
+    // 把强度信息恢复出来
+    pcl::PointCloud<pcl::PointXYZI> pc_pti;
+    for (auto pt : global_map.points)
+    {
+      pcl::PointXYZI pti;
+      pti.x = pt.x;
+      pti.y = pt.y;
+      pti.z = pt.z;
+      pti.intensity = pt.a;
+      pc_pti.points.push_back(pti);
+
+      pt.a = 255; // 恢复成原样
+
+    }
+    pc_pti.width = 1;
+    pc_pti.height = pc_pti.points.size();
+    pcl::io::savePCDFile(data_path + "global_map_intensity.pcd", pc_pti);
+
     ROS_WARN("save map: %ld ", global_map.size() );
     pcl::io::savePCDFile(data_path + "global_map.pcd", global_map);
 
-    static pcl::VoxelGrid<PointType> dsrgb;
+    static pcl::VoxelGrid<PointTypeXYZRGBI> dsrgb;
     dsrgb.setLeafSize( downsample_size,  downsample_size,  downsample_size );
     dsrgb.setInputCloud(global_map.makeShared());
     dsrgb.filter(global_map);
@@ -369,10 +407,9 @@ int main(int argc, char** argv)
     // pcl::io::savePCDFile( data_path +"global_map_5cm.pcd", global_map);
     // downsample_voxel(global_map, 0.1);
     // ROS_WARN("downsample_voxel save map: %ld ", global_map.size() );
-    pcl::io::savePCDFile( data_path + "global_map_voxel.pcd", global_map);
+    pcl::io::savePCDFile(data_path + "global_map_voxel.pcd", global_map);
     ROS_WARN("save map end:");
   }
-
   // ros::Rate loop_rate(1);
   // while(ros::ok())
   // {

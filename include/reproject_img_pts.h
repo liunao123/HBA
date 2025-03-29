@@ -41,7 +41,7 @@
 
 #include <Eigen/Dense>
 
-typedef pcl::PointXYZRGB     PointTypeRGB;
+typedef pcl::PointXYZRGBA     PointTypeRGB;
 typedef pcl::PointCloud<PointTypeRGB> PointCloudXYZRGB;
 
 namespace DetectandTract{

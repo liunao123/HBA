@@ -189,7 +189,7 @@ namespace DetectandTract{
             // std::cout << "pixel: " << pt.y << " " << pt.x << std::endl;
 
             // 移除边缘的点
-            const int remove_pixel_thres = 2;
+            const int remove_pixel_thres = 1;
             if (pt.y < remove_pixel_thres || pt.y > (i_params.cam_height - remove_pixel_thres) ||
                 pt.x < remove_pixel_thres || pt.x > (i_params.cam_width - remove_pixel_thres))
             {
@@ -201,6 +201,7 @@ namespace DetectandTract{
             pointRGB.x = it->x;
             pointRGB.y = it->y;
             pointRGB.z = it->z;
+            pointRGB.a = it->intensity; // 把强度信息当成透明度保留下来
 
             // 获取该点对应的RGB值
             // cv::Vec3b pixel_rgb =  raw_img.at<cv::Vec3b>(pt.y, pt.x);
@@ -261,7 +262,7 @@ namespace DetectandTract{
 
             while (  !pose_buffer.empty()  )
             {
-                if (pose_buffer.front()->header.stamp.toSec() == img->header.stamp.toSec())
+                if (pose_buffer.front()->header.stamp.toSec() <= img->header.stamp.toSec())
                 {
                     break;
                 }
@@ -274,10 +275,13 @@ namespace DetectandTract{
             }
         }
         
+        mtx_buffer.lock();
         auto pose_msg = pose_buffer.front();
+        pose_buffer.pop_front();
+        mtx_buffer.unlock();
 
         ROS_WARN_ONCE("project pts with pose :");
-        // ROS_INFO("project pts<%ld>with pose :", rgb_pts_cloud->size());
+        ROS_INFO("project pts<%ld>with pose :", rgb_pts_cloud->size());
 
         static Eigen::Matrix4d last_pose = Eigen::Matrix4d::Identity();
 
@@ -298,8 +302,8 @@ namespace DetectandTract{
         auto delta_pose =  last_pose.inverse() * transformMatrix_b2w;    
         Eigen::Vector3d delta_translation = delta_pose.block<3, 1>(0, 3);
         float delta_yaw = std::atan2(delta_pose(1, 0), delta_pose(0, 0));
-        // std::cout << "d_trans  : " << delta_translation.norm() << std::endl;
-        // std::cout << "d_yaw : " << delta_yaw << std::endl;
+        std::cout << "d_trans  : " << delta_translation.norm() << std::endl;
+        std::cout << "d_yaw : " << delta_yaw << std::endl;
 
         if (!dense_map)
         {
@@ -382,11 +386,11 @@ namespace DetectandTract{
 
         subPose = nh.subscribe( i_params.pose_topic , 10000, &projector::pose_callback, this);
 
-        // typedef message_filters::sync_policies::ExactTime<sensor_msgs::Image, sensor_msgs::PointCloud2>
-        //     MySyncPolicy_pts_img;
-
-        typedef message_filters::sync_policies::ApproximateTime<sensor_msgs::Image, sensor_msgs::PointCloud2>
+        typedef message_filters::sync_policies::ExactTime<sensor_msgs::Image, sensor_msgs::PointCloud2>
             MySyncPolicy_pts_img;
+
+        // typedef message_filters::sync_policies::ApproximateTime<sensor_msgs::Image, sensor_msgs::PointCloud2>
+        //     MySyncPolicy_pts_img;
 
         // 创建消息同步器，并将订阅器和回调函数绑定到同步器上
         message_filters::Synchronizer<MySyncPolicy_pts_img> sync_pts_img(MySyncPolicy_pts_img(10000), image_sub, pcl_sub );
