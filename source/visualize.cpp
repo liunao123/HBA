@@ -31,7 +31,14 @@
 #include "mypcl.hpp"
 #include <thread>
 
+// 选择性编译
+// #define USE_RGB
+
+#ifdef USE_RGBA
 typedef pcl::PointXYZRGBA PointTypeXYZRGBI;
+#else
+typedef pcl::PointXYZI PointTypeXYZRGBI;
+#endif
 
 using namespace std;
 using namespace Eigen;
@@ -150,7 +157,6 @@ int main(int argc, char** argv)
   cout<<"pcd_end_index "<< pcd_end_index <<endl;
 
   pcl::PointCloud<PointTypeXYZRGBI>::Ptr pc_surf(new pcl::PointCloud<PointTypeXYZRGBI>);
-  // pcl::PointCloud<pcl::PointXYZRGB>::Ptr color_full(new pcl::PointCloud<pcl::PointXYZRGB>);
 
   ros::Time cur_t;
   geometry_msgs::PoseArray parray;
@@ -374,23 +380,27 @@ int main(int argc, char** argv)
 
   if( save_global_map && global_map.size() )
   {
+
     // 把强度信息恢复出来
-    pcl::PointCloud<pcl::PointXYZI> pc_pti;
-    for (auto pt : global_map.points)
+    #ifdef USE_RGBA
     {
-      pcl::PointXYZI pti;
-      pti.x = pt.x;
-      pti.y = pt.y;
-      pti.z = pt.z;
-      pti.intensity = pt.a;
-      pc_pti.points.push_back(pti);
+        pcl::PointCloud<pcl::PointXYZI> pc_pti;
+        for (auto pt : global_map.points)
+        {
+            pcl::PointXYZI pti;
+            pti.x = pt.x;
+            pti.y = pt.y;
+            pti.z = pt.z;
+            pti.intensity = pt.a;
+            pc_pti.points.push_back(pti);
 
-      pt.a = 255; // 恢复成原样
-
+            pt.a = 255; // 恢复成原样
+        }
+        pc_pti.width = 1;
+        pc_pti.height = pc_pti.points.size();
+        pcl::io::savePCDFile(data_path + "global_map_intensity.pcd", pc_pti);
     }
-    pc_pti.width = 1;
-    pc_pti.height = pc_pti.points.size();
-    pcl::io::savePCDFile(data_path + "global_map_intensity.pcd", pc_pti);
+    #endif
 
     ROS_WARN("save map: %ld ", global_map.size() );
     pcl::io::savePCDFile(data_path + "global_map.pcd", global_map);
