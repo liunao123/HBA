@@ -7,11 +7,9 @@
 #include <pcl/filters/extract_indices.h>
 #include <pcl/filters/radius_outlier_removal.h>
 #include <pcl/filters/passthrough.h>
-#include <Eigen/Dense>
-#include <pcl/filters/passthrough.h>
-#include <pcl/filters/radius_outlier_removal.h>
 #include <pcl/filters/conditional_removal.h>
 #include <pcl/filters/crop_box.h>
+#include <Eigen/Dense>
 
 // typedef pcl::PointXYZINormal PointType;
 typedef pcl::PointXYZI PointType;

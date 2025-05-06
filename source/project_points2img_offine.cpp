@@ -17,7 +17,7 @@
 #include <pcl_conversions/pcl_conversions.h>
 #include <pcl/io/pcd_io.h>
 
-typedef pcl::PointXYZRGB PointTypeRGB;
+typedef pcl::PointXYZRGBA PointTypeRGB;
 typedef pcl::PointCloud<PointTypeRGB> PointCloudXYZRGB;
 bool exit_flag = false;
 
@@ -216,6 +216,7 @@ const std::pair< PointCloudXYZRGB::Ptr , cv::Mat >  projection_img_pts_callback(
         pointRGB.x = it->x;
         pointRGB.y = it->y;
         pointRGB.z = it->z;
+        pointRGB.a = it->intensity;
 
         // 获取该点对应的RGB值
         // cv::Vec3b pixel_rgb =  raw_img.at<cv::Vec3b>(pt.y, pt.x);

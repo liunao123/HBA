@@ -78,14 +78,14 @@ void odomCallback(const nav_msgs::Odometry::ConstPtr &msg)
     static nav_msgs::Odometry::ConstPtr last_odom = msg;
 
     // static const double period_time = 0.1;
-    double period_time = ( msg->header.stamp - last_odom->header.stamp ).toSec() ;
+    double period_time = (msg->header.stamp - last_odom->header.stamp).toSec();
 
     // child_frame_id 坐标系下的线速度 得到对应的位移增量
     double delta_pt_x = msg->twist.twist.linear.x * period_time;
     double delta_pt_y = msg->twist.twist.linear.y * period_time;
     double delta_pt_z = msg->twist.twist.linear.z * period_time;
     Eigen::Vector3d delta_p(delta_pt_x, delta_pt_y, delta_pt_z);
-    std::cout << delta_p.transpose() << std::endl;
+    // std::cout << delta_p.transpose() << std::endl;
 
     // 对应的姿态
     Eigen::AngleAxisd rollAngle(Eigen::AngleAxisd(msg->twist.twist.angular.x * period_time, Eigen::Vector3d::UnitX()));
@@ -98,84 +98,26 @@ void odomCallback(const nav_msgs::Odometry::ConstPtr &msg)
 
     Eigen::Quaterniond quat_last(last_odom->pose.pose.orientation.w, last_odom->pose.pose.orientation.x, last_odom->pose.pose.orientation.y, last_odom->pose.pose.orientation.z);
     Eigen::Matrix3d m3d_last = quat_last.matrix();
-    
+
     // Eigen::Vector3d eulerAngle = (m3d_last.inverse() * m3d_now).eulerAngles(2,1,0) * 180.0 / 3.1415926;
-    Eigen::Vector3d eulerAngle = R2ypr (m3d_last.inverse() * m3d_now) ;
+    Eigen::Vector3d eulerAngle = R2ypr(m3d_last.inverse() * m3d_now);
 
     Eigen::Vector3d t_last(last_odom->pose.pose.position.x, last_odom->pose.pose.position.y, last_odom->pose.pose.position.z);
-    Eigen::Vector3d last_delta_p( last_odom->twist.twist.linear.x, last_odom->twist.twist.linear.y, last_odom->twist.twist.linear.z ) ;
+    Eigen::Vector3d last_delta_p(last_odom->twist.twist.linear.x, last_odom->twist.twist.linear.y, last_odom->twist.twist.linear.z);
     last_delta_p = last_delta_p * period_time;
 
     // 预测的位置
-    Eigen::Vector3d t_est =  quat_last * delta_p +  t_last ;
+    Eigen::Vector3d t_est = quat_last * delta_p + t_last;
     Eigen::Vector3d dp(msg->pose.pose.position.x - last_odom->pose.pose.position.x,
                        msg->pose.pose.position.y - last_odom->pose.pose.position.y,
                        msg->pose.pose.position.z - last_odom->pose.pose.position.z);
-    std::cout << dp.transpose() << std::endl;
+    // std::cout << dp.transpose() << std::endl;
     // 判断是全部保存，函数以关键帧的形式部分保存
     if (!dense_map)
     {
-        // if (t_est.norm() > 0.10 || std::fabs(eulerAngle[0]) > 10 || std::fabs(eulerAngle[1]) > 10 || std::fabs(eulerAngle[2]) > 10)
-        if (dp.norm() > 0.10 || std::fabs(eulerAngle[0]) > 0.17 || std::fabs(eulerAngle[1]) > 0.17 || std::fabs(eulerAngle[2]) > 0.17 )
-        // if ( dp.norm() > 0.10  )
+        if (dp.norm() > 0.10 || std::fabs(eulerAngle[0]) > 0.17 || std::fabs(eulerAngle[1]) > 0.17 || std::fabs(eulerAngle[2]) > 0.17)
         {
             keyframe_flag = true;
-            outfile.open("/home/pose_graph.g2o", std::ios::app);
-            outfile_edge.open("/home/pose_graph_edge.g2o", std::ios::app);
-            if (vertex_id == 0)
-            {
-                outfile << "VERTEX_SE3:QUAT " << vertex_id << " 0 0 0 0 0 0 1" << std::endl;
-            }
-            // Write vertex
-            outfile << "VERTEX_SE3:QUAT " << vertex_id + 1 << " "
-                    << std::fixed << std::setprecision(6)
-                    << msg->pose.pose.position.x << " "
-                    << msg->pose.pose.position.y << " " << msg->pose.pose.position.z << " "
-                    << msg->pose.pose.orientation.x << " " << msg->pose.pose.orientation.y << " "
-                    << msg->pose.pose.orientation.z << " " << msg->pose.pose.orientation.w << std::endl;
-
-            // Write edge
-            outfile_edge << "EDGE_SE3:QUAT " << vertex_id << " " << vertex_id + 1 << " "
-                         << std::fixed << std::setprecision(6)
-                         << delta_p.x() << " " << delta_p.y() << " " << delta_p.z() << " "
-                         << delta_quaternion_ypr.x() << " " << delta_quaternion_ypr.y() << " " << delta_quaternion_ypr.z() << " " << delta_quaternion_ypr.w()
-                         << " 1000 0 0 0 0 0 1000 0 0 0 0 1000 0 0 0 4000 0 0 4000 0 4000"
-                         << std::endl;
-
-            // 第 0 个点云 应该没有 ，对应的位姿 是 0
-            vertex_id++;
-
-            outfile.close();
-            outfile_edge.close();
-
-            // save data file
-            std::stringstream ss;
-            ss << std::setw(6) << std::setfill('0') << vertex_id;
-            std::string one_path = data_path + "pose_graph/" + ss.str();
-            // ROS_WARN( "data_path is %s " , one_path.c_str() );
-            system(("mkdir -p " + one_path).c_str());
-            std::ofstream pose_data(one_path + "/data", std::ios::out);
-            pose_data
-                << "stamp " << int(msg->header.stamp.sec) << " " << int(msg->header.stamp.nsec) << std::endl // 一定要是 int 的 time
-                << "estimate" << std::endl
-                << std::fixed << std::setprecision(10)
-
-                << m3d_last(0) << " " << m3d_last(1) << " " << m3d_last(2) << " " << t_est(0) << std::endl
-                << m3d_last(3) << " " << m3d_last(4) << " " << m3d_last(5) << " " << t_est(1) << std::endl
-                << m3d_last(6) << " " << m3d_last(7) << " " << m3d_last(8) << " " << t_est(2) << std::endl
-
-                << "0 0 0 1" << std::endl
-                << "odom" << std::endl
-                << m3d_now(0) << " " << m3d_now(1) << " " << m3d_now(2) << " " << msg->pose.pose.position.x << std::endl
-                << m3d_now(3) << " " << m3d_now(4) << " " << m3d_now(5) << " " << msg->pose.pose.position.y << std::endl
-                << m3d_now(6) << " " << m3d_now(7) << " " << m3d_now(8) << " " << msg->pose.pose.position.z << std::endl
-                << "0 0 0 1" << std::endl
-                // << "accum_distance -1" << std::endl
-                << "id " << vertex_id << std::endl;
-            pose_data.close();
-
-            // Update vertex id and last pose
-            last_odom = msg;
         }
         else
         {
@@ -183,6 +125,63 @@ void odomCallback(const nav_msgs::Odometry::ConstPtr &msg)
             return;
         }
     }
+
+    outfile.open("/home/pose_graph.g2o", std::ios::app);
+    outfile_edge.open("/home/pose_graph_edge.g2o", std::ios::app);
+    if (vertex_id == 0)
+    {
+        outfile << "VERTEX_SE3:QUAT " << vertex_id << " 0 0 0 0 0 0 1" << std::endl;
+    }
+    // Write vertex
+    outfile << "VERTEX_SE3:QUAT " << vertex_id + 1 << " "
+            << std::fixed << std::setprecision(6)
+            << msg->pose.pose.position.x << " "
+            << msg->pose.pose.position.y << " " << msg->pose.pose.position.z << " "
+            << msg->pose.pose.orientation.x << " " << msg->pose.pose.orientation.y << " "
+            << msg->pose.pose.orientation.z << " " << msg->pose.pose.orientation.w << std::endl;
+
+    // Write edge
+    outfile_edge << "EDGE_SE3:QUAT " << vertex_id << " " << vertex_id + 1 << " "
+                 << std::fixed << std::setprecision(6)
+                 << delta_p.x() << " " << delta_p.y() << " " << delta_p.z() << " "
+                 << delta_quaternion_ypr.x() << " " << delta_quaternion_ypr.y() << " " << delta_quaternion_ypr.z() << " " << delta_quaternion_ypr.w()
+                 << " 1000 0 0 0 0 0 1000 0 0 0 0 1000 0 0 0 4000 0 0 4000 0 4000"
+                 << std::endl;
+
+    // 第 0 个点云 应该没有 ，对应的位姿 是 0
+    vertex_id++;
+
+    outfile.close();
+    outfile_edge.close();
+
+    // save data file
+    std::stringstream ss;
+    ss << std::setw(6) << std::setfill('0') << vertex_id;
+    std::string one_path = data_path + "pose_graph/" + ss.str();
+    // ROS_WARN( "data_path is %s " , one_path.c_str() );
+    system(("mkdir -p " + one_path).c_str());
+    std::ofstream pose_data(one_path + "/data", std::ios::out);
+    pose_data
+        << "stamp " << int(msg->header.stamp.sec) << " " << int(msg->header.stamp.nsec) << std::endl // 一定要是 int 的 time
+        << "estimate" << std::endl
+        << std::fixed << std::setprecision(10)
+
+        << m3d_last(0) << " " << m3d_last(1) << " " << m3d_last(2) << " " << t_est(0) << std::endl
+        << m3d_last(3) << " " << m3d_last(4) << " " << m3d_last(5) << " " << t_est(1) << std::endl
+        << m3d_last(6) << " " << m3d_last(7) << " " << m3d_last(8) << " " << t_est(2) << std::endl
+
+        << "0 0 0 1" << std::endl
+        << "odom" << std::endl
+        << m3d_now(0) << " " << m3d_now(1) << " " << m3d_now(2) << " " << msg->pose.pose.position.x << std::endl
+        << m3d_now(3) << " " << m3d_now(4) << " " << m3d_now(5) << " " << msg->pose.pose.position.y << std::endl
+        << m3d_now(6) << " " << m3d_now(7) << " " << m3d_now(8) << " " << msg->pose.pose.position.z << std::endl
+        << "0 0 0 1" << std::endl
+        // << "accum_distance -1" << std::endl
+        << "id " << vertex_id << std::endl;
+    pose_data.close();
+
+    // Update vertex id and last pose
+    last_odom = msg;
 }
 
 void ptsCallback(const sensor_msgs::PointCloud2::ConstPtr &pts)
@@ -232,7 +231,8 @@ int main(int argc, char **argv)
     
     sleep(3); // second s
     ROS_WARN(" remove %s .", data_path.c_str());
-    system(("rm -r " + data_path + " " + data_path + "_bak" ).c_str() );
+    system(("rm -r " + data_path ).c_str() );
+    // system(("rm -r " + data_path + " " + data_path + "_bak" ).c_str() );
     system(("mkdir -p " + data_path + "pose_graph/").c_str());
 
     message_filters::Subscriber<sensor_msgs::PointCloud2> pcl_sub(nh, "/undistort_laser", 10000);

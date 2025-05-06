@@ -84,9 +84,24 @@ target_link_libraries(get_camera_pose ${catkin_LIBRARIES} ${PCL_LIBRARIES})
 add_executable(shadow_filter source/shadow_filter.cpp)
 target_link_libraries(shadow_filter ${catkin_LIBRARIES}  ${PCL_LIBRARIES} )
 
+add_executable(bag_to_pcd source/bag_to_pcd.cpp)
+target_link_libraries(bag_to_pcd ${catkin_LIBRARIES}  ${PCL_LIBRARIES} )
+
+
 add_executable(get_lidar_intensity_image source/get_lidar_intensity_image.cpp)
 target_link_libraries(get_lidar_intensity_image ${catkin_LIBRARIES}  ${OpenCV_LIBRARIES}  ${PCL_LIBRARIES} )
 
 
 add_executable(test_opencv source/test_opencv.cpp)
 target_link_libraries(test_opencv ${catkin_LIBRARIES}  ${OpenCV_LIBRARIES}  ${PCL_LIBRARIES} )
+
+add_executable(odom2posegraph_keyframe source/odom2posegraph_keyframe.cpp)
+target_link_libraries(odom2posegraph_keyframe ${catkin_LIBRARIES}  ${PCL_LIBRARIES} )
+
+add_executable(extract_plan source/extract_plan.cpp)
+target_link_libraries(extract_plan ${catkin_LIBRARIES}  ${PCL_LIBRARIES} )
+
+
+add_executable(test_fisheye source/test_fisheye.cpp)
+target_link_libraries(test_fisheye ${catkin_LIBRARIES}  ${PCL_LIBRARIES}  ${OpenCV_LIBRARIES}  )
+

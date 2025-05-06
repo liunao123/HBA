@@ -30,7 +30,7 @@
 
 #include <Eigen/Dense>
 
-// typedef pcl::PointXYZRGB PointTypeRGB;
+// typedef pcl::PointXYZRGBA PointTypeRGB;
 typedef pcl::PointXYZI  PointTypeRGB;
 typedef pcl::PointCloud<PointTypeRGB> PointCloudXYZRGB;
 
@@ -167,14 +167,13 @@ void ptsCallback(const sensor_msgs::PointCloud2::ConstPtr &pts)
     std::string one_path = data_path + "pose_graph/" + ss.str();
     // system(("mkdir -p " + one_path).c_str());
     pcl::io::savePCDFile(one_path + "/cloud.pcd", *cloud);
-
 }
 
 void odom_pts_callback(const nav_msgs::Odometry::ConstPtr &odom, const sensor_msgs::PointCloud2::ConstPtr &pts)
 {
     odomCallback(odom);
     ptsCallback(pts);
-    ROS_WARN( "vertex_id is %d " , vertex_id );
+    ROS_WARN( "vertex_id is %d , pts size %d ." , vertex_id , pts->width * pts->height );
 }
 
 int main(int argc, char **argv)
@@ -184,7 +183,7 @@ int main(int argc, char **argv)
     signal(SIGINT, signal_callback_handler);
 
     std::string rm_cmd =  "rm /home/pose_graph.g2o  /home/pose_graph_edge.g2o ";
-    system( rm_cmd.c_str());
+    system( rm_cmd.c_str() );
 
     ros::NodeHandle nh;
     nh.getParam("data_path", data_path);

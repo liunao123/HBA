@@ -102,12 +102,12 @@ void filter_points_intensity_percent(pcl::PointCloud<PointTypeXYZRGBI>::Ptr & pt
     std::set<int> intensities_to_remove;
     int total_count = 0;
     size_t i = 0;
-    while ( total_count < pts->points.size() * 0.2 )
+    while ( total_count < pts->points.size() * 0.5 )
     {
         intensities_to_remove.insert(intensity_vec[i].first);
         total_count += intensity_vec[i].second;
-        // std::cout << "intensity_vec[i].second : " << intensity_vec[i].second << std::endl;
-        // std::cout << "total_count : " << total_count << std::endl;
+        std::cout << "intensity_vec[i].second : " << intensity_vec[i].second << std::endl;
+        std::cout << "total_count : " << total_count << std::endl;
         i++;
     }
     std::cout << "intensities_to_remove : " << intensities_to_remove.size() << std::endl;
@@ -129,21 +129,20 @@ void filter_points_intensity_percent(pcl::PointCloud<PointTypeXYZRGBI>::Ptr & pt
     filtered_cloud->width = filtered_cloud->points.size();
     filtered_cloud->height = 1;
 
-    // *pts = *filtered_cloud;
-
     std::cout << "Filtered points: " << filtered_cloud->points.size() << std::endl;
-    // // *pts = *filtered_cloud;
+    // *pts = *filtered_cloud;
     pcl::PassThrough<PointType> pass_1;
     pass_1.setInputCloud( filtered_cloud );
     pass_1.setFilterFieldName("intensity");
-    pass_1.setFilterLimits( 148 , 152 );
+    pass_1.setFilterLimits( 147 , 153 );
     pass_1.setNegative( true );
+    std::cout << "filter points: " << pts->points.size() << std::endl;
     pass_1.filter( *pts );
+    std::cout << " pts: " << " : " << pts->points.size() << std::endl;
 
     pass_1.setInputCloud( pts );
-    pass_1.setFilterLimits( -5 , 1 );
+    pass_1.setFilterLimits( -5 , 2 );
     pass_1.filter( *pts );
-
     std::cout << "filter points: " << pts->points.size() << std::endl;
 
 }
@@ -188,30 +187,30 @@ int main(int argc, char** argv)
   sensor_msgs::PointCloud2 debugMsg, cloudMsg, outMsg;
   vector<mypcl::pose> pose_vec;
 
-  std::ifstream file_HBA( data_path + "HBA_pose.txt" );
-  std::ifstream file_GTSAM( data_path + "GTSAM_pose.txt" );
-  std::ifstream file_key_pose( data_path + "key_pose.txt" );
-  if ( file_HBA.good() )
-  {
-    pose_vec = mypcl::read_pose(data_path + "HBA_pose.txt");
-    ROS_WARN("read %sHBA_pose.txt", data_path.c_str());
-  }
-  else if(file_GTSAM.good())
-  {
-    pose_vec = mypcl::read_pose(data_path + "GTSAM_pose.txt");
-    ROS_WARN("read %sGTSAM_pose.txt", data_path.c_str());
-  }
-  else if(file_key_pose.good())
-  {
-    pose_vec = mypcl::read_pose(data_path + "key_pose.txt");
-    ROS_WARN("read %skey_pose.txt", data_path.c_str());
-  }
-  else
-  {
-    ROS_WARN(" can not read pose file . try to read %spose_graph/graph.g2o " , data_path.c_str() );
-    pose_vec = mypcl::readPosesFromG2O(data_path + "pose_graph/graph.g2o");
-    // return -1;
-  }
+  // std::ifstream file_HBA( data_path + "HBA_pose.txt" );
+  // std::ifstream file_GTSAM( data_path + "GTSAM_pose.txt" );
+  // std::ifstream file_key_pose( data_path + "key_pose.txt" );
+  // if ( file_HBA.good() )
+  // {
+  //   pose_vec = mypcl::read_pose(data_path + "HBA_pose.txt");
+  //   ROS_WARN("read %sHBA_pose.txt", data_path.c_str());
+  // }
+  // else if(file_GTSAM.good())
+  // {
+  //   pose_vec = mypcl::read_pose(data_path + "GTSAM_pose.txt");
+  //   ROS_WARN("read %sGTSAM_pose.txt", data_path.c_str());
+  // }
+  // else if(file_key_pose.good())
+  // {
+  //   pose_vec = mypcl::read_pose(data_path + "key_pose.txt");
+  //   ROS_WARN("read %skey_pose.txt", data_path.c_str());
+  // }
+  // else
+  // {
+  //   ROS_WARN(" can not read pose file . try to read %spose_graph/graph.g2o " , data_path.c_str() );
+  //   pose_vec = mypcl::readPosesFromG2O(data_path + "pose_graph/graph.g2o");
+  //   // return -1;
+  // }
   
   std::vector<double> st_pose = mypcl::get_pose_stamp();
 
@@ -219,8 +218,8 @@ int main(int argc, char** argv)
   cout<<"pose size "<<pose_size<<endl;
   nh.getParam("pcd_end_index", pcd_end_index);
 
-  if(pcd_end_index > pose_size)
-    pcd_end_index = pose_size;
+  // if(pcd_end_index > pose_size)
+  //   pcd_end_index = pose_size;
 
   cout<<"pcd_end_index "<< pcd_end_index <<endl;
 
@@ -275,17 +274,17 @@ int main(int argc, char** argv)
       ROS_INFO("read %0.1f% , %ldth file , total %ld  . ", float(100.0*i / pcd_end_index) , i , pcd_end_index );
     }
 
-    if( i > 1  && i < pcd_end_index ) 
-    {
-      if( std::fabs( pose_vec[i].t(2) - pose_vec[i-1].t(2) ) > 0.1 && std::fabs( pose_vec[i].t(2) - pose_vec[i+1].t(2) ) > 0.1)
-      {
-        continue;
-      }
-    }
+    // if( i > 1  && i < pcd_end_index ) 
+    // {
+    //   if( std::fabs( pose_vec[i].t(2) - pose_vec[i-1].t(2) ) > 0.1 && std::fabs( pose_vec[i].t(2) - pose_vec[i+1].t(2) ) > 0.1)
+    //   {
+    //     continue;
+    //   }
+    // }
 
-    // if( i > 800  && i < 850 ) continue;
+    if( i > 2040  && i < 2500 ) continue;
 
-    // if( i > 2000  && i < 2050 ) continue;
+    // if( i > 2300  && i < 4200 ) continue;
 
 
     // if( i > 4300  && i < 6330 ) continue;
@@ -329,9 +328,7 @@ int main(int argc, char** argv)
     // *pc_filtered = *pc_surf;
 
 
-    filter_points_intensity_percent(pc_filtered);
-
-
+    // filter_points_intensity_percent(pc_filtered);
     // pcl::io::savePCDFile("/opt/csg/slam/navs/test1.pcd", *pc_surf);
     //   continue;
 
@@ -342,11 +339,44 @@ int main(int argc, char** argv)
     // pose_vec[i].t(2) = 0;
     // mypcl::transform_pointcloud(*pc_filtered, *pc_filtered, pose_vec[i].t, pose_vec[i].q);
 
+
+    std::string filename = data_path + "pose_graph/" + ss.str() + "/data";
+        std::cerr << " file: " << filename << std::endl;
+
     Eigen::Matrix4d key_pose = Eigen::Matrix4d::Identity();
+    std::ifstream file(filename);
+    
+    if (!file.is_open()) {
+        std::cerr << "Error opening file: " << filename << std::endl;
+        // return key_pose;
+    }
+
+    std::string line;
+    int row = 0;
+    
+    // Skip first two lines
+    std::getline(file, line);
+    std::getline(file, line);
+    
+    // Read the 4x4 matrix
+    while (std::getline(file, line) && row < 4) {
+        std::istringstream iss(line);
+        for (int col = 0; col < 4; col++) {
+            iss >> key_pose(row, col);
+        }
+        row++;
+    }
+    
+    file.close();
+    std::cout << key_pose << std::endl;
+
+    // Eigen::Matrix4d key_pose = Eigen::Matrix4d::Identity();
     // 将四元数转换为旋转矩阵并填充变换矩阵
-    key_pose.block<3, 3>(0, 0) = pose_vec[i].q.toRotationMatrix();
-    // 设置平移部分
-    key_pose.block<3, 1>(0, 3) = pose_vec[i].t;
+    // key_pose.block<3, 3>(0, 0) = pose_vec[i].q.toRotationMatrix();
+    // // 设置平移部分
+    // key_pose.block<3, 1>(0, 3) = pose_vec[i].t;
+
+
     pcl::transformPointCloud(*pc_filtered, *pc_filtered, key_pose);
 
 
@@ -354,101 +384,102 @@ int main(int argc, char** argv)
     {
       global_map += *pc_filtered;
     }
+    continue;
 
-    // 根据位置去网格化
-    // 会丢失RGB信息
-    // downsample_voxel(*pc_filtered, downsample_size);
+    // // 根据位置去网格化
+    // // 会丢失RGB信息
+    // // downsample_voxel(*pc_filtered, downsample_size);
 
-    pcl::toROSMsg(*pc_filtered, cloudMsg);
-    cloudMsg.header.frame_id = "odom";
-    cloudMsg.header.stamp = cur_t;
-    pub_map.publish(cloudMsg);
+    // pcl::toROSMsg(*pc_filtered, cloudMsg);
+    // cloudMsg.header.frame_id = "odom";
+    // cloudMsg.header.stamp = cur_t;
+    // pub_map.publish(cloudMsg);
 
-    geometry_msgs::Pose apose;
-    apose.orientation.w = pose_vec[i].q.w();
-    apose.orientation.x = pose_vec[i].q.x();
-    apose.orientation.y = pose_vec[i].q.y();
-    apose.orientation.z = pose_vec[i].q.z();
-    apose.position.x = pose_vec[i].t(0);
-    apose.position.y = pose_vec[i].t(1);
-    apose.position.z = pose_vec[i].t(2);
-    parray.poses.push_back(apose);
-    pub_pose.publish(parray);
+    // geometry_msgs::Pose apose;
+    // apose.orientation.w = pose_vec[i].q.w();
+    // apose.orientation.x = pose_vec[i].q.x();
+    // apose.orientation.y = pose_vec[i].q.y();
+    // apose.orientation.z = pose_vec[i].q.z();
+    // apose.position.x = pose_vec[i].t(0);
+    // apose.position.y = pose_vec[i].t(1);
+    // apose.position.z = pose_vec[i].t(2);
+    // parray.poses.push_back(apose);
+    // pub_pose.publish(parray);
 
-    geometry_msgs::PoseStamped pst;
-    pst.header.stamp = ros::Time().fromSec(st_pose[i]);
-    pst.header.frame_id = "odom";    
-    pst.pose = apose;
-    pubLidarPose.publish(pst);
+    // geometry_msgs::PoseStamped pst;
+    // pst.header.stamp = ros::Time().fromSec(st_pose[i]);
+    // pst.header.frame_id = "odom";    
+    // pst.pose = apose;
+    // pubLidarPose.publish(pst);
 
-    pcl::toROSMsg(*pc_surf, cloudMsg);
-    cloudMsg.header.stamp = ros::Time().fromSec(st_pose[i]);
-    cloudMsg.header.frame_id = "base_link";    
-    pubSurfPoint.publish(cloudMsg);
+    // pcl::toROSMsg(*pc_surf, cloudMsg);
+    // cloudMsg.header.stamp = ros::Time().fromSec(st_pose[i]);
+    // cloudMsg.header.frame_id = "base_link";    
+    // pubSurfPoint.publish(cloudMsg);
 
-    static tf::TransformBroadcaster br;
-    tf::Transform transform;
-    transform.setOrigin(tf::Vector3(pose_vec[i].t(0), pose_vec[i].t(1), pose_vec[i].t(2)));
-    tf::Quaternion q(pose_vec[i].q.x(), pose_vec[i].q.y(), pose_vec[i].q.z(), pose_vec[i].q.w());
-    transform.setRotation(q);
-    br.sendTransform(tf::StampedTransform(transform, ros::Time().fromSec(st_pose[i]) , "odom", "base_link"));
+    // static tf::TransformBroadcaster br;
+    // tf::Transform transform;
+    // transform.setOrigin(tf::Vector3(pose_vec[i].t(0), pose_vec[i].t(1), pose_vec[i].t(2)));
+    // tf::Quaternion q(pose_vec[i].q.x(), pose_vec[i].q.y(), pose_vec[i].q.z(), pose_vec[i].q.w());
+    // transform.setRotation(q);
+    // br.sendTransform(tf::StampedTransform(transform, ros::Time().fromSec(st_pose[i]) , "odom", "base_link"));
 
-    // publish pose trajectory
-    visualization_msgs::Marker marker;
-    marker.header.frame_id = "odom";
-    marker.header.stamp = cur_t;
-    marker.ns = "basic_shapes";
-    marker.id = i;
-    marker.type = visualization_msgs::Marker::SPHERE;
-    // marker.type = visualization_msgs::Marker::TEXT_VIEW_FACING;
-    marker.text = (std::to_string(i) + "_" + std::to_string( st_pose[i] ) ).c_str();
-    marker.pose.position.x = pose_vec[i].t(0);
-    marker.pose.position.y = pose_vec[i].t(1);
-    marker.pose.position.z = pose_vec[i].t(2);
-    pose_vec[i].q.normalize();
-    marker.pose.orientation.x = pose_vec[i].q.x();
-    marker.pose.orientation.y = pose_vec[i].q.y();
-    marker.pose.orientation.z = pose_vec[i].q.x();
-    marker.pose.orientation.w = pose_vec[i].q.w();
-    marker.scale.x = marker_size; // Set the scale of the marker -- 1x1x1 here means 1m on a side
-    marker.scale.y = marker_size;
-    marker.scale.z = marker_size;
-    marker.color.r = float(1-float(i)/pose_size);
-    marker.color.g = float(float(i)/pose_size);
-    marker.color.b = float(float(i)/pose_size);
-    marker.color.a = 1.0;
-    marker.lifetime = ros::Duration();
-    pub_trajectory.publish(marker);
+    // // publish pose trajectory
+    // visualization_msgs::Marker marker;
+    // marker.header.frame_id = "odom";
+    // marker.header.stamp = cur_t;
+    // marker.ns = "basic_shapes";
+    // marker.id = i;
+    // marker.type = visualization_msgs::Marker::SPHERE;
+    // // marker.type = visualization_msgs::Marker::TEXT_VIEW_FACING;
+    // marker.text = (std::to_string(i) + "_" + std::to_string( st_pose[i] ) ).c_str();
+    // marker.pose.position.x = pose_vec[i].t(0);
+    // marker.pose.position.y = pose_vec[i].t(1);
+    // marker.pose.position.z = pose_vec[i].t(2);
+    // pose_vec[i].q.normalize();
+    // marker.pose.orientation.x = pose_vec[i].q.x();
+    // marker.pose.orientation.y = pose_vec[i].q.y();
+    // marker.pose.orientation.z = pose_vec[i].q.x();
+    // marker.pose.orientation.w = pose_vec[i].q.w();
+    // marker.scale.x = marker_size; // Set the scale of the marker -- 1x1x1 here means 1m on a side
+    // marker.scale.y = marker_size;
+    // marker.scale.z = marker_size;
+    // marker.color.r = float(1-float(i)/pose_size);
+    // marker.color.g = float(float(i)/pose_size);
+    // marker.color.b = float(float(i)/pose_size);
+    // marker.color.a = 1.0;
+    // marker.lifetime = ros::Duration();
+    // pub_trajectory.publish(marker);
 
-    // publish pose number
-    visualization_msgs::Marker marker_txt;
-    marker_txt.header.frame_id = "odom";
-    marker_txt.header.stamp = cur_t;
-    marker_txt.ns = "marker_txt";
-    marker_txt.id = i; // Any marker sent with the same namespace and id will overwrite the old one
-    marker_txt.type = visualization_msgs::Marker::TEXT_VIEW_FACING;
-    ostringstream str;
-    str << i;
-    marker_txt.text = str.str();
-    marker.action = visualization_msgs::Marker::ADD;
-    marker_txt.action = visualization_msgs::Marker::ADD;
-    marker_txt.pose.position.x = pose_vec[i].t(0)+marker_size;
-    marker_txt.pose.position.y = pose_vec[i].t(1)+marker_size;
-    marker_txt.pose.position.z = pose_vec[i].t(2);
-    marker_txt.pose.orientation.x = 0; pose_vec[i].q.x();
-    marker_txt.pose.orientation.y = 0; pose_vec[i].q.y();
-    marker_txt.pose.orientation.z = 0; pose_vec[i].q.x();
-    marker_txt.pose.orientation.w = 1.0;
-    marker_txt.scale.x = marker_size;
-    marker_txt.scale.y = marker_size;
-    marker_txt.scale.z = marker_size;
-    marker_txt.color.r = 1.0f;
-    marker_txt.color.g = 1.0f;
-    marker_txt.color.b = 1.0f;
-    marker_txt.color.a = 1.0;
-    marker_txt.lifetime = ros::Duration();
-    if(i%5 == 0) markerArray.markers.push_back(marker_txt);
-    pub_pose_number.publish(markerArray);
+    // // publish pose number
+    // visualization_msgs::Marker marker_txt;
+    // marker_txt.header.frame_id = "odom";
+    // marker_txt.header.stamp = cur_t;
+    // marker_txt.ns = "marker_txt";
+    // marker_txt.id = i; // Any marker sent with the same namespace and id will overwrite the old one
+    // marker_txt.type = visualization_msgs::Marker::TEXT_VIEW_FACING;
+    // ostringstream str;
+    // str << i;
+    // marker_txt.text = str.str();
+    // marker.action = visualization_msgs::Marker::ADD;
+    // marker_txt.action = visualization_msgs::Marker::ADD;
+    // marker_txt.pose.position.x = pose_vec[i].t(0)+marker_size;
+    // marker_txt.pose.position.y = pose_vec[i].t(1)+marker_size;
+    // marker_txt.pose.position.z = pose_vec[i].t(2);
+    // marker_txt.pose.orientation.x = 0; pose_vec[i].q.x();
+    // marker_txt.pose.orientation.y = 0; pose_vec[i].q.y();
+    // marker_txt.pose.orientation.z = 0; pose_vec[i].q.x();
+    // marker_txt.pose.orientation.w = 1.0;
+    // marker_txt.scale.x = marker_size;
+    // marker_txt.scale.y = marker_size;
+    // marker_txt.scale.z = marker_size;
+    // marker_txt.color.r = 1.0f;
+    // marker_txt.color.g = 1.0f;
+    // marker_txt.color.b = 1.0f;
+    // marker_txt.color.a = 1.0;
+    // marker_txt.lifetime = ros::Duration();
+    // if(i%5 == 0) markerArray.markers.push_back(marker_txt);
+    // pub_pose_number.publish(markerArray);
     usleep(10*1000);
     // rate.sleep();
   }
@@ -480,7 +511,6 @@ int main(int argc, char** argv)
 
     ROS_WARN("save map: %ld ", global_map.size() );
     pcl::io::savePCDFile(data_path + "global_map.pcd", global_map);
-    ROS_WARN("save all points done . " );
 
     static pcl::VoxelGrid<PointTypeXYZRGBI> dsrgb;
     dsrgb.setLeafSize( downsample_size,  downsample_size,  downsample_size );
