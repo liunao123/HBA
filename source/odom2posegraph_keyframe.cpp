@@ -15,12 +15,6 @@
 #include <vector>
 #include <csignal>
 
-// #include <opencv2/core.hpp>
-// #include <opencv2/highgui.hpp>
-// #include <opencv2/imgproc.hpp>
-// #include <opencv2/opencv.hpp>
-// #include <opencv/cv.hpp>
-
 // #include <pcl/filters/voxel_grid.h>
 // #include <pcl_ros/transforms.h>
 #include <pcl/point_cloud.h>
@@ -36,6 +30,7 @@ typedef pcl::PointCloud<PointTypeRGB> PointCloudXYZRGB;
 
 bool exit_flag = false;
 bool keyframe_flag = true; //按距离变化量保存关键帧
+double keyframe_distance_threshold = 0.25; //按距离变化量保存关键帧
 bool dense_map = true; //按距离变化量保存关键帧
 
 int vertex_id = 0;
@@ -73,8 +68,8 @@ static Eigen::Vector3d R2ypr(const Eigen::Matrix3d &R)
 
 void odomCallback(const nav_msgs::Odometry::ConstPtr &msg)
 {
-    // static std::ofstream outfile("./pose_graph_f.g2o", std::ios::app);
-    // static std::ofstream outfile_edge("./pose_graph_edge_f.g2o", std::ios::app);
+    // static std::ofstream outfile("./poseGraph_f.g2o", std::ios::app);
+    // static std::ofstream outfile_edge("./poseGraph_edge_f.g2o", std::ios::app);
     static nav_msgs::Odometry::ConstPtr last_odom = msg;
 
     // static const double period_time = 0.1;
@@ -115,7 +110,7 @@ void odomCallback(const nav_msgs::Odometry::ConstPtr &msg)
     // 判断是全部保存，函数以关键帧的形式部分保存
     if (!dense_map)
     {
-        if (dp.norm() > 0.10 || std::fabs(eulerAngle[0]) > 0.17 || std::fabs(eulerAngle[1]) > 0.17 || std::fabs(eulerAngle[2]) > 0.17)
+        if (dp.norm() > keyframe_distance_threshold || std::fabs(eulerAngle[0]) > 0.17 || std::fabs(eulerAngle[1]) > 0.17 || std::fabs(eulerAngle[2]) > 0.17)
         {
             keyframe_flag = true;
         }
@@ -126,8 +121,8 @@ void odomCallback(const nav_msgs::Odometry::ConstPtr &msg)
         }
     }
 
-    outfile.open("/home/pose_graph.g2o", std::ios::app);
-    outfile_edge.open("/home/pose_graph_edge.g2o", std::ios::app);
+    outfile.open("/home/poseGraph.g2o", std::ios::app);
+    outfile_edge.open("/home/poseGraph_edge.g2o", std::ios::app);
     if (vertex_id == 0)
     {
         outfile << "VERTEX_SE3:QUAT " << vertex_id << " 0 0 0 0 0 0 1" << std::endl;
@@ -157,7 +152,7 @@ void odomCallback(const nav_msgs::Odometry::ConstPtr &msg)
     // save data file
     std::stringstream ss;
     ss << std::setw(6) << std::setfill('0') << vertex_id;
-    std::string one_path = data_path + "pose_graph/" + ss.str();
+    std::string one_path = data_path + "poseGraph/" + ss.str();
     // ROS_WARN( "data_path is %s " , one_path.c_str() );
     system(("mkdir -p " + one_path).c_str());
     std::ofstream pose_data(one_path + "/data", std::ios::out);
@@ -191,7 +186,7 @@ void ptsCallback(const sensor_msgs::PointCloud2::ConstPtr &pts)
 
     std::stringstream ss;
     ss << std::setw(6) << std::setfill('0') << vertex_id;
-    std::string one_path = data_path + "pose_graph/" + ss.str();
+    std::string one_path = data_path + "poseGraph/" + ss.str();
     // system(("mkdir -p " + one_path).c_str());
     pcl::io::savePCDFile(one_path + "/cloud.pcd", *cloud);
 
@@ -214,46 +209,82 @@ void odom_pts_callback(const nav_msgs::Odometry::ConstPtr &odom, const sensor_ms
     ROS_WARN( "vertex_id is %d " , vertex_id );
 }
 
+
+void pose_pts_callback(const geometry_msgs::PoseStamped::ConstPtr &pose, const sensor_msgs::PointCloud2::ConstPtr &pts)
+{
+    // 创建新的 Odometry 消息
+    nav_msgs::Odometry::Ptr odom = boost::make_shared<nav_msgs::Odometry>();
+
+    // 将 pose 的位姿信息赋值给 odom 的 pose
+    odom->pose.pose = pose->pose; // 复制位姿信息
+    odom->header = pose->header;  // 复制时间戳等信息
+
+    // 如果需要，可以转换为 ConstPtr
+    nav_msgs::Odometry::ConstPtr odomcp = odom;
+
+    odomCallback(odomcp);
+    if (dense_map)
+    {
+        ptsCallback(pts);
+    }
+    else
+    {
+        if (keyframe_flag)
+        {
+            ptsCallback(pts);
+        }
+    }
+    ROS_WARN( "vertex_id is %d " , vertex_id );
+}
+
 int main(int argc, char **argv)
 {
     ros::init(argc, argv, "odom2posegraph");
 
     signal(SIGINT, signal_callback_handler);
 
-    std::string rm_cmd =  "rm /home/pose_graph.g2o  /home/pose_graph_edge.g2o ";
+    std::string rm_cmd =  "rm /home/poseGraph.g2o  /home/poseGraph_edge.g2o ";
     system( rm_cmd.c_str());
 
     ros::NodeHandle nh;
     nh.getParam("data_path", data_path);
     nh.getParam("dense_map", dense_map);
+    nh.getParam("keyframe_distance_threshold", keyframe_distance_threshold);
+    
     ROS_WARN(" data_path %s .",  data_path.c_str() );
     ROS_WARN(" dense_map %d .",  dense_map );
+    ROS_WARN(" keyframe_distance_threshold %f .",  keyframe_distance_threshold );
     
     sleep(3); // second s
     ROS_WARN(" remove %s .", data_path.c_str());
     system(("rm -r " + data_path ).c_str() );
     // system(("rm -r " + data_path + " " + data_path + "_bak" ).c_str() );
-    system(("mkdir -p " + data_path + "pose_graph/").c_str());
+    system(("mkdir -p " + data_path + "poseGraph/").c_str());
 
     message_filters::Subscriber<sensor_msgs::PointCloud2> pcl_sub(nh, "/undistort_laser", 10000);
     message_filters::Subscriber<nav_msgs::Odometry> odom_sub(nh, "/lidar_odom", 10000);
+    message_filters::Subscriber<geometry_msgs::PoseStamped> pose_sub(nh, "/lidar_pose", 10000);
 
-    typedef message_filters::sync_policies::ExactTime<nav_msgs::Odometry, sensor_msgs::PointCloud2> MySyncPolicy_pts_img;
+    // typedef message_filters::sync_policies::ExactTime<nav_msgs::Odometry, sensor_msgs::PointCloud2> MySyncPolicy_pts_img;
     // typedef message_filters::sync_policies::ApproximateTime<sensor_msgs::Image, sensor_msgs::PointCloud2> MySyncPolicy_pts_img;
 
     // 创建消息同步器，并将订阅器和回调函数绑定到同步器上
-    message_filters::Synchronizer<MySyncPolicy_pts_img> sync_odom_pts(MySyncPolicy_pts_img(10000), odom_sub, pcl_sub);
-    sync_odom_pts.registerCallback(boost::bind(&odom_pts_callback, _1, _2));
+    // message_filters::Synchronizer<MySyncPolicy_pts_img> sync_odom_pts(MySyncPolicy_pts_img(10000), odom_sub, pcl_sub);
+    // sync_odom_pts.registerCallback(boost::bind(&odom_pts_callback, _1, _2));
+
+    typedef message_filters::sync_policies::ExactTime<geometry_msgs::PoseStamped, sensor_msgs::PointCloud2> MySyncPolicy_pts_img;
+    message_filters::Synchronizer<MySyncPolicy_pts_img> sync_pose_pts(MySyncPolicy_pts_img(10000), pose_sub, pcl_sub);
+    sync_pose_pts.registerCallback(boost::bind(&pose_pts_callback, _1, _2));
 
     while (ros::ok())
     {
       ros::spinOnce();
     }
 
-    std::string g2o_path = data_path + "pose_graph/graph.g2o";
-    std::string new_cmd =  "cat /home/pose_graph.g2o >>  " + g2o_path;
+    std::string g2o_path = data_path + "poseGraph/graph.g2o";
+    std::string new_cmd =  "cat /home/poseGraph.g2o >>  " + g2o_path;
     // new_cmd = new_cmd +  " &&  echo \"\" >> " + g2o_path;
-    new_cmd = new_cmd +  " &&  cat /home/pose_graph_edge.g2o >>  " + g2o_path;
+    new_cmd = new_cmd +  " &&  cat /home/poseGraph_edge.g2o >>  " + g2o_path;
 
     system( new_cmd.c_str());
     // ROS_WARN( "Cmd is %s" , new_cmd.c_str() );

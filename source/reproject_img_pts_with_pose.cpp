@@ -1,4 +1,4 @@
-#include "reproject_img_pts.h"
+#include "reproject_img_pts_with_pose.h"
 
 namespace DetectandTract{
     void projector::initParams(ros::NodeHandle &nh)
@@ -81,7 +81,7 @@ namespace DetectandTract{
         sleep(5); // second s
         ROS_WARN(" remove %s .", data_path.c_str());
         system(("rm -r " + data_path).c_str());
-        system(("mkdir -p " + data_path + "pose_graph/").c_str());
+        system(("mkdir -p " + data_path + "poseGraph/").c_str());
     }
 
     bool projector::save_rgb_map_srv(std_srvs::Trigger::Request &req, std_srvs::Trigger::Response &res)
@@ -319,13 +319,13 @@ namespace DetectandTract{
         std::string pcd_name = data_path + std::to_string(keyframe_cnts);
         std::stringstream ss;
         ss << std::setw(6) << std::setfill('0') << keyframe_cnts;
-        std::string one_path = data_path + "pose_graph/" + ss.str();
+        std::string one_path = data_path + "poseGraph/" + ss.str();
         system(("mkdir -p " + one_path).c_str());
 
         pcl::io::savePCDFile(one_path + "/cloud.pcd", *rgb_pts_cloud);
         // pcl::io::savePCDFile(one_path + "/cloud_dis.pcd", *cloud);
 
-        std::ofstream file((data_path + "pose_graph/graph.g2o"), std::ios_base::app); // 使用追加模式打开文件
+        std::ofstream file((data_path + "poseGraph/graph.g2o"), std::ios_base::app); // 使用追加模式打开文件
         if (!file)
             std::cerr << "Error opening g2o file: " << std::endl;
         // else
@@ -369,11 +369,8 @@ namespace DetectandTract{
         mtx_buffer.unlock();
     }
 
- 
-    
     void projector::matrix_to_transfrom(Eigen::MatrixXf &matrix, tf::Transform & trans)
     {
-        
     }
 
     projector::projector() 

@@ -208,8 +208,8 @@ int main(int argc, char** argv)
   }
   else
   {
-    ROS_WARN(" can not read pose file . try to read %spose_graph/graph.g2o " , data_path.c_str() );
-    pose_vec = mypcl::readPosesFromG2O(data_path + "pose_graph/graph.g2o");
+    ROS_WARN(" can not read pose file . try to read %sposeGraph/graph.g2o " , data_path.c_str() );
+    pose_vec = mypcl::readPosesFromG2O(data_path + "poseGraph/graph.g2o");
     // return -1;
   }
   
@@ -238,13 +238,13 @@ int main(int argc, char** argv)
   // ros::Duration(2).sleep();
   pcl::PointCloud<PointTypeXYZRGBI> global_map;
 
-  float range = 1.50;
+  float range = 3.0;
   pcl::CropBox<PointTypeXYZRGBI> cropBoxFilter_temp(false); //保留内部
   // pcl::RadiusOutlierRemoval<PointTypeXYZRGBI> outrem;
   // outrem.setRadiusSearch(0.2);
   // outrem.setMinNeighborsInRadius(1);
 
-  range = 60.0;
+  range = 50.0;
   cropBoxFilter_temp.setMin(Eigen::Vector4f(-range, -range , -range, 1.0f));
   cropBoxFilter_temp.setMax(Eigen::Vector4f(range, range, range, 1.0f));
   i = pcd_start_index;
@@ -285,10 +285,10 @@ int main(int argc, char** argv)
 
     // if( i > 800  && i < 850 ) continue;
 
-    // if( i > 2000  && i < 2050 ) continue;
+    if( i > 3310  && i < 3690 ) continue;
 
 
-    // if( i > 4300  && i < 6330 ) continue;
+    // if( i > 3590  && i <  ) continue;
     // if( i > 5000  && i < 5130 ) continue;
     // if( i > 6000  && i < 6130 ) continue;
     // if( i > 6950  && i < 7000 ) continue;
@@ -302,14 +302,14 @@ int main(int argc, char** argv)
 
     pc_surf->points.clear();
     
-    // mypcl::loadPCD(data_path + "pose_graph/", pcd_name_fill_num, pc_surf, i );
+    // mypcl::loadPCD(data_path + "poseGraph/", pcd_name_fill_num, pc_surf, i );
 
     std::stringstream ss;
     if (pcd_name_fill_num > 0)
       ss << std::setw(pcd_name_fill_num) << std::setfill('0') << i;
     else
       ss << i;
-    std::string pcd_st = data_path + "pose_graph/" + ss.str() + "/cloud.pcd";
+    std::string pcd_st = data_path + "poseGraph/" + ss.str() + "/cloud.pcd";
     pcl::io::loadPCDFile(pcd_st, *pc_surf);
 
     // ROS_WARN("pc_surf : %d ", pc_surf->points.size() );
@@ -329,7 +329,7 @@ int main(int argc, char** argv)
     // *pc_filtered = *pc_surf;
 
 
-    filter_points_intensity_percent(pc_filtered);
+    // filter_points_intensity_percent(pc_filtered);
 
 
     // pcl::io::savePCDFile("/opt/csg/slam/navs/test1.pcd", *pc_surf);
@@ -340,14 +340,18 @@ int main(int argc, char** argv)
     // // apply filter
     // outrem.filter(*pc_filtered);
     // pose_vec[i].t(2) = 0;
-    // mypcl::transform_pointcloud(*pc_filtered, *pc_filtered, pose_vec[i].t, pose_vec[i].q);
+    mypcl::transform_pointcloud(*pc_filtered, *pc_filtered, pose_vec[i].t, pose_vec[i].q);
 
-    Eigen::Matrix4d key_pose = Eigen::Matrix4d::Identity();
-    // 将四元数转换为旋转矩阵并填充变换矩阵
-    key_pose.block<3, 3>(0, 0) = pose_vec[i].q.toRotationMatrix();
-    // 设置平移部分
-    key_pose.block<3, 1>(0, 3) = pose_vec[i].t;
-    pcl::transformPointCloud(*pc_filtered, *pc_filtered, key_pose);
+    // Eigen::Matrix4d key_pose = Eigen::Matrix4d::Identity();
+    // // 将四元数转换为旋转矩阵并填充变换矩阵
+    // //  pose_vec[i].q.normalize();
+    // key_pose.block<3, 3>(0, 0) = pose_vec[i].q.toRotationMatrix();
+    // // key_pose.block<3, 3>(0, 0) = qq.toRotationMatrix();
+    // // 设置平移部分
+    // key_pose.block<3, 1>(0, 3) = pose_vec[i].t;
+    // pcl::transformPointCloud(*pc_filtered, *pc_filtered, key_pose);
+    // std::cout << i << "qt: " << key_pose << std::endl;
+    // std::cout << "qt: " << pose_vec[i].t.transpose()   << " " << qq.coeffs().transpose() << std::endl;
 
 
     if(save_global_map)
@@ -449,7 +453,7 @@ int main(int argc, char** argv)
     marker_txt.lifetime = ros::Duration();
     if(i%5 == 0) markerArray.markers.push_back(marker_txt);
     pub_pose_number.publish(markerArray);
-    usleep(10*1000);
+    usleep(1*1000);
     // rate.sleep();
   }
   ROS_WARN("pub end:");

@@ -54,14 +54,14 @@ void signal_callback_handler(int signum)
 
 void odomCallback(const nav_msgs::Odometry::ConstPtr &msg)
 {
-    // static std::ofstream outfile("./pose_graph_f.g2o", std::ios::app);
-    // static std::ofstream outfile_edge("./pose_graph_edge_f.g2o", std::ios::app);
+    // static std::ofstream outfile("./poseGraph_f.g2o", std::ios::app);
+    // static std::ofstream outfile_edge("./poseGraph_edge_f.g2o", std::ios::app);
     static nav_msgs::Odometry::ConstPtr last_odom = msg;
 
     static const double period_time = 0.1;
     
-    outfile.open("/home/pose_graph.g2o", std::ios::app);
-    outfile_edge.open("/home/pose_graph_edge.g2o", std::ios::app);
+    outfile.open("/home/poseGraph.g2o", std::ios::app);
+    outfile_edge.open("/home/poseGraph_edge.g2o", std::ios::app);
 
     if (vertex_id == 0)
     {
@@ -125,7 +125,7 @@ void odomCallback(const nav_msgs::Odometry::ConstPtr &msg)
     // save data file
     std::stringstream ss;
     ss << std::setw(6) << std::setfill('0') << vertex_id;
-    std::string one_path = data_path + "pose_graph/" + ss.str();
+    std::string one_path = data_path + "poseGraph/" + ss.str();
     // ROS_WARN( "data_path is %s " , one_path.c_str() );
     system(("mkdir -p " + one_path).c_str());
     std::ofstream pose_data( one_path + "/data", std::ios::out);
@@ -164,7 +164,7 @@ void ptsCallback(const sensor_msgs::PointCloud2::ConstPtr &pts)
 
     std::stringstream ss;
     ss << std::setw(6) << std::setfill('0') << vertex_id;
-    std::string one_path = data_path + "pose_graph/" + ss.str();
+    std::string one_path = data_path + "poseGraph/" + ss.str();
     // system(("mkdir -p " + one_path).c_str());
     pcl::io::savePCDFile(one_path + "/cloud.pcd", *cloud);
 }
@@ -182,7 +182,7 @@ int main(int argc, char **argv)
 
     signal(SIGINT, signal_callback_handler);
 
-    std::string rm_cmd =  "rm /home/pose_graph.g2o  /home/pose_graph_edge.g2o ";
+    std::string rm_cmd =  "rm /home/poseGraph.g2o  /home/poseGraph_edge.g2o ";
     system( rm_cmd.c_str() );
 
     ros::NodeHandle nh;
@@ -190,7 +190,7 @@ int main(int argc, char **argv)
     sleep(3); // second s
     ROS_WARN(" remove %s .", data_path.c_str());
     system(("rm -r " + data_path).c_str());
-    system(("mkdir -p " + data_path + "pose_graph/").c_str());
+    system(("mkdir -p " + data_path + "poseGraph/").c_str());
 
     message_filters::Subscriber<sensor_msgs::PointCloud2> pcl_sub(nh, "/undistort_laser", 10000);
     message_filters::Subscriber<nav_msgs::Odometry> odom_sub(nh, "/lidar_odom", 10000);
@@ -207,10 +207,10 @@ int main(int argc, char **argv)
       ros::spinOnce();
     }
 
-    std::string g2o_path = data_path + "pose_graph/graph.g2o";
-    std::string new_cmd =  "cat /home/pose_graph.g2o >>  " + g2o_path;
+    std::string g2o_path = data_path + "poseGraph/graph.g2o";
+    std::string new_cmd =  "cat /home/poseGraph.g2o >>  " + g2o_path;
     // new_cmd = new_cmd +  " &&  echo \"\" >> " + g2o_path;
-    new_cmd = new_cmd +  " &&  cat /home/pose_graph_edge.g2o >>  " + g2o_path;
+    new_cmd = new_cmd +  " &&  cat /home/poseGraph_edge.g2o >>  " + g2o_path;
 
     system( new_cmd.c_str());
     // ROS_WARN( "Cmd is %s" , new_cmd.c_str() );

@@ -207,8 +207,8 @@ int main(int argc, char** argv)
   // }
   // else
   // {
-  //   ROS_WARN(" can not read pose file . try to read %spose_graph/graph.g2o " , data_path.c_str() );
-  //   pose_vec = mypcl::readPosesFromG2O(data_path + "pose_graph/graph.g2o");
+  //   ROS_WARN(" can not read pose file . try to read %sposeGraph/graph.g2o " , data_path.c_str() );
+  //   pose_vec = mypcl::readPosesFromG2O(data_path + "poseGraph/graph.g2o");
   //   // return -1;
   // }
   
@@ -249,6 +249,10 @@ int main(int argc, char** argv)
   i = pcd_start_index;
 
   ros::Rate  rate(10);
+
+  pose_vec.resize(pcd_end_index);
+  st_pose.resize(pcd_end_index);
+
 
   for( ; i < pcd_end_index ; i++)
   {
@@ -301,14 +305,14 @@ int main(int argc, char** argv)
 
     pc_surf->points.clear();
     
-    // mypcl::loadPCD(data_path + "pose_graph/", pcd_name_fill_num, pc_surf, i );
+    // mypcl::loadPCD(data_path + "poseGraph/", pcd_name_fill_num, pc_surf, i );
 
     std::stringstream ss;
     if (pcd_name_fill_num > 0)
       ss << std::setw(pcd_name_fill_num) << std::setfill('0') << i;
     else
       ss << i;
-    std::string pcd_st = data_path + "pose_graph/" + ss.str() + "/cloud.pcd";
+    std::string pcd_st = data_path + "poseGraph/" + ss.str() + "/cloud.pcd";
     pcl::io::loadPCDFile(pcd_st, *pc_surf);
 
     // ROS_WARN("pc_surf : %d ", pc_surf->points.size() );
@@ -340,7 +344,7 @@ int main(int argc, char** argv)
     // mypcl::transform_pointcloud(*pc_filtered, *pc_filtered, pose_vec[i].t, pose_vec[i].q);
 
 
-    std::string filename = data_path + "pose_graph/" + ss.str() + "/data";
+    std::string filename = data_path + "poseGraph/" + ss.str() + "/data";
         std::cerr << " file: " << filename << std::endl;
 
     Eigen::Matrix4d key_pose = Eigen::Matrix4d::Identity();
@@ -377,6 +381,13 @@ int main(int argc, char** argv)
     // key_pose.block<3, 1>(0, 3) = pose_vec[i].t;
 
 
+    Eigen::Matrix3d rot_matrix = key_pose.block<3,3>(0,0);
+    Eigen::Quaterniond qtemp(rot_matrix);
+    qtemp.normalize(); 
+    pose_vec[i].q = qtemp;
+    pose_vec[i].t = key_pose.block<3, 1>(0, 3);
+
+
     pcl::transformPointCloud(*pc_filtered, *pc_filtered, key_pose);
 
 
@@ -384,102 +395,102 @@ int main(int argc, char** argv)
     {
       global_map += *pc_filtered;
     }
-    continue;
+    // continue;
 
-    // // 根据位置去网格化
-    // // 会丢失RGB信息
-    // // downsample_voxel(*pc_filtered, downsample_size);
+    // 根据位置去网格化
+    // 会丢失RGB信息
+    // downsample_voxel(*pc_filtered, downsample_size);
 
-    // pcl::toROSMsg(*pc_filtered, cloudMsg);
-    // cloudMsg.header.frame_id = "odom";
-    // cloudMsg.header.stamp = cur_t;
-    // pub_map.publish(cloudMsg);
+    pcl::toROSMsg(*pc_filtered, cloudMsg);
+    cloudMsg.header.frame_id = "odom";
+    cloudMsg.header.stamp = cur_t;
+    pub_map.publish(cloudMsg);
 
-    // geometry_msgs::Pose apose;
-    // apose.orientation.w = pose_vec[i].q.w();
-    // apose.orientation.x = pose_vec[i].q.x();
-    // apose.orientation.y = pose_vec[i].q.y();
-    // apose.orientation.z = pose_vec[i].q.z();
-    // apose.position.x = pose_vec[i].t(0);
-    // apose.position.y = pose_vec[i].t(1);
-    // apose.position.z = pose_vec[i].t(2);
-    // parray.poses.push_back(apose);
-    // pub_pose.publish(parray);
+    geometry_msgs::Pose apose;
+    apose.orientation.w = pose_vec[i].q.w();
+    apose.orientation.x = pose_vec[i].q.x();
+    apose.orientation.y = pose_vec[i].q.y();
+    apose.orientation.z = pose_vec[i].q.z();
+    apose.position.x = pose_vec[i].t(0);
+    apose.position.y = pose_vec[i].t(1);
+    apose.position.z = pose_vec[i].t(2);
+    parray.poses.push_back(apose);
+    pub_pose.publish(parray);
 
-    // geometry_msgs::PoseStamped pst;
-    // pst.header.stamp = ros::Time().fromSec(st_pose[i]);
-    // pst.header.frame_id = "odom";    
-    // pst.pose = apose;
-    // pubLidarPose.publish(pst);
+    geometry_msgs::PoseStamped pst;
+    pst.header.stamp = ros::Time().fromSec(st_pose[i]);
+    pst.header.frame_id = "odom";    
+    pst.pose = apose;
+    pubLidarPose.publish(pst);
 
-    // pcl::toROSMsg(*pc_surf, cloudMsg);
-    // cloudMsg.header.stamp = ros::Time().fromSec(st_pose[i]);
-    // cloudMsg.header.frame_id = "base_link";    
-    // pubSurfPoint.publish(cloudMsg);
+    pcl::toROSMsg(*pc_surf, cloudMsg);
+    cloudMsg.header.stamp = ros::Time().fromSec(st_pose[i]);
+    cloudMsg.header.frame_id = "base_link";    
+    pubSurfPoint.publish(cloudMsg);
 
-    // static tf::TransformBroadcaster br;
-    // tf::Transform transform;
-    // transform.setOrigin(tf::Vector3(pose_vec[i].t(0), pose_vec[i].t(1), pose_vec[i].t(2)));
-    // tf::Quaternion q(pose_vec[i].q.x(), pose_vec[i].q.y(), pose_vec[i].q.z(), pose_vec[i].q.w());
-    // transform.setRotation(q);
-    // br.sendTransform(tf::StampedTransform(transform, ros::Time().fromSec(st_pose[i]) , "odom", "base_link"));
+    static tf::TransformBroadcaster br;
+    tf::Transform transform;
+    transform.setOrigin(tf::Vector3(pose_vec[i].t(0), pose_vec[i].t(1), pose_vec[i].t(2)));
+    tf::Quaternion q(pose_vec[i].q.x(), pose_vec[i].q.y(), pose_vec[i].q.z(), pose_vec[i].q.w());
+    transform.setRotation(q);
+    br.sendTransform(tf::StampedTransform(transform, ros::Time().fromSec(st_pose[i]) , "odom", "base_link"));
 
-    // // publish pose trajectory
-    // visualization_msgs::Marker marker;
-    // marker.header.frame_id = "odom";
-    // marker.header.stamp = cur_t;
-    // marker.ns = "basic_shapes";
-    // marker.id = i;
-    // marker.type = visualization_msgs::Marker::SPHERE;
-    // // marker.type = visualization_msgs::Marker::TEXT_VIEW_FACING;
-    // marker.text = (std::to_string(i) + "_" + std::to_string( st_pose[i] ) ).c_str();
-    // marker.pose.position.x = pose_vec[i].t(0);
-    // marker.pose.position.y = pose_vec[i].t(1);
-    // marker.pose.position.z = pose_vec[i].t(2);
-    // pose_vec[i].q.normalize();
-    // marker.pose.orientation.x = pose_vec[i].q.x();
-    // marker.pose.orientation.y = pose_vec[i].q.y();
-    // marker.pose.orientation.z = pose_vec[i].q.x();
-    // marker.pose.orientation.w = pose_vec[i].q.w();
-    // marker.scale.x = marker_size; // Set the scale of the marker -- 1x1x1 here means 1m on a side
-    // marker.scale.y = marker_size;
-    // marker.scale.z = marker_size;
-    // marker.color.r = float(1-float(i)/pose_size);
-    // marker.color.g = float(float(i)/pose_size);
-    // marker.color.b = float(float(i)/pose_size);
-    // marker.color.a = 1.0;
-    // marker.lifetime = ros::Duration();
-    // pub_trajectory.publish(marker);
+    // publish pose trajectory
+    visualization_msgs::Marker marker;
+    marker.header.frame_id = "odom";
+    marker.header.stamp = cur_t;
+    marker.ns = "basic_shapes";
+    marker.id = i;
+    marker.type = visualization_msgs::Marker::SPHERE;
+    // marker.type = visualization_msgs::Marker::TEXT_VIEW_FACING;
+    marker.text = (std::to_string(i) + "_" + std::to_string( st_pose[i] ) ).c_str();
+    marker.pose.position.x = pose_vec[i].t(0);
+    marker.pose.position.y = pose_vec[i].t(1);
+    marker.pose.position.z = pose_vec[i].t(2);
+    pose_vec[i].q.normalize();
+    marker.pose.orientation.x = pose_vec[i].q.x();
+    marker.pose.orientation.y = pose_vec[i].q.y();
+    marker.pose.orientation.z = pose_vec[i].q.x();
+    marker.pose.orientation.w = pose_vec[i].q.w();
+    marker.scale.x = marker_size; // Set the scale of the marker -- 1x1x1 here means 1m on a side
+    marker.scale.y = marker_size;
+    marker.scale.z = marker_size;
+    marker.color.r = float(1-float(i)/pose_size);
+    marker.color.g = float(float(i)/pose_size);
+    marker.color.b = float(float(i)/pose_size);
+    marker.color.a = 1.0;
+    marker.lifetime = ros::Duration();
+    pub_trajectory.publish(marker);
 
-    // // publish pose number
-    // visualization_msgs::Marker marker_txt;
-    // marker_txt.header.frame_id = "odom";
-    // marker_txt.header.stamp = cur_t;
-    // marker_txt.ns = "marker_txt";
-    // marker_txt.id = i; // Any marker sent with the same namespace and id will overwrite the old one
-    // marker_txt.type = visualization_msgs::Marker::TEXT_VIEW_FACING;
-    // ostringstream str;
-    // str << i;
-    // marker_txt.text = str.str();
-    // marker.action = visualization_msgs::Marker::ADD;
-    // marker_txt.action = visualization_msgs::Marker::ADD;
-    // marker_txt.pose.position.x = pose_vec[i].t(0)+marker_size;
-    // marker_txt.pose.position.y = pose_vec[i].t(1)+marker_size;
-    // marker_txt.pose.position.z = pose_vec[i].t(2);
-    // marker_txt.pose.orientation.x = 0; pose_vec[i].q.x();
-    // marker_txt.pose.orientation.y = 0; pose_vec[i].q.y();
-    // marker_txt.pose.orientation.z = 0; pose_vec[i].q.x();
-    // marker_txt.pose.orientation.w = 1.0;
-    // marker_txt.scale.x = marker_size;
-    // marker_txt.scale.y = marker_size;
-    // marker_txt.scale.z = marker_size;
-    // marker_txt.color.r = 1.0f;
-    // marker_txt.color.g = 1.0f;
-    // marker_txt.color.b = 1.0f;
-    // marker_txt.color.a = 1.0;
-    // marker_txt.lifetime = ros::Duration();
-    // if(i%5 == 0) markerArray.markers.push_back(marker_txt);
-    // pub_pose_number.publish(markerArray);
+    // publish pose number
+    visualization_msgs::Marker marker_txt;
+    marker_txt.header.frame_id = "odom";
+    marker_txt.header.stamp = cur_t;
+    marker_txt.ns = "marker_txt";
+    marker_txt.id = i; // Any marker sent with the same namespace and id will overwrite the old one
+    marker_txt.type = visualization_msgs::Marker::TEXT_VIEW_FACING;
+    ostringstream str;
+    str << i;
+    marker_txt.text = str.str();
+    marker.action = visualization_msgs::Marker::ADD;
+    marker_txt.action = visualization_msgs::Marker::ADD;
+    marker_txt.pose.position.x = pose_vec[i].t(0)+marker_size;
+    marker_txt.pose.position.y = pose_vec[i].t(1)+marker_size;
+    marker_txt.pose.position.z = pose_vec[i].t(2);
+    marker_txt.pose.orientation.x = 0; pose_vec[i].q.x();
+    marker_txt.pose.orientation.y = 0; pose_vec[i].q.y();
+    marker_txt.pose.orientation.z = 0; pose_vec[i].q.x();
+    marker_txt.pose.orientation.w = 1.0;
+    marker_txt.scale.x = marker_size;
+    marker_txt.scale.y = marker_size;
+    marker_txt.scale.z = marker_size;
+    marker_txt.color.r = 1.0f;
+    marker_txt.color.g = 1.0f;
+    marker_txt.color.b = 1.0f;
+    marker_txt.color.a = 1.0;
+    marker_txt.lifetime = ros::Duration();
+    if(i%5 == 0) markerArray.markers.push_back(marker_txt);
+      pub_pose_number.publish(markerArray);
     usleep(10*1000);
     // rate.sleep();
   }

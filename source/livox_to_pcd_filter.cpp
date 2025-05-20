@@ -342,7 +342,6 @@ void save_points_from_bag(const string bag_file, const string pcd_file)
         if (cloud.points[i].x > 1.0 and cloud.points[i].x < 150.0 and std::fabs(cloud.points[i].y) < limit_y)
         {
           output_cloud.points.push_back(cloud.points[i]);
-          
         }
       }
     }

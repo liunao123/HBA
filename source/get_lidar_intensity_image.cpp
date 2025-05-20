@@ -71,38 +71,7 @@ std::vector<cv::Point> getLinePixels(const cv::Vec4i& line) {
     return pixels;
 }
 
-void calcDirection(const std::vector<Eigen::Vector2d> &points, Eigen::Vector2d &direction)
-{
-    Eigen::Vector2d mean_point(0, 0);
-    for (size_t i = 0; i < points.size(); i++)
-    {
-        mean_point(0) += points[i](0);
-        mean_point(1) += points[i](1);
-    }
-    mean_point(0) = mean_point(0) / points.size();
-    mean_point(1) = mean_point(1) / points.size();
-    Eigen::Matrix2d S;
-    S << 0, 0, 0, 0;
-    for (size_t i = 0; i < points.size(); i++)
-    {
-        Eigen::Matrix2d s = (points[i] - mean_point) * (points[i] - mean_point).transpose();
-        S += s;
-    }
-    Eigen::EigenSolver<Eigen::Matrix<double, 2, 2>> es(S);
-    Eigen::MatrixXcd evecs = es.eigenvectors();
-    Eigen::MatrixXcd evals = es.eigenvalues();
-    Eigen::MatrixXd evalsReal;
-    evalsReal = evals.real();
-    Eigen::MatrixXf::Index evalsMax;
-    evalsReal.rowwise().sum().maxCoeff(&evalsMax); // 得到最大特征值的位置
-    direction << evecs.real()(0, evalsMax), evecs.real()(1, evalsMax);
-    // std::cout << "evalsReal: " << evalsReal << std::endl;
-    // std::cout << "direction: " << direction << std::endl;
-    // if ( direction(0) < direction(1) )
-    //   std::cout << "direction: " << direction(1) / direction(0) << std::endl;
-    // else
-    //   std::cout << "direction: " << direction(0) / direction(1) << std::endl;
-}
+
 void initParams(ros::NodeHandle &nh)
 {
     double_t camtocam[12] = {0.0};
