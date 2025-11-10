@@ -1,0 +1,33 @@
+<launch>
+  <node pkg="hba" type="visualize_with_pose_pcd" name="visualize_with_pose_pcd" output="screen">
+
+    <!-- <param name="pose_file" type="string" value="/mnt/nvme0n1p2/data/0930/global_lidar_poses_opt.tum"/> -->
+    <!-- <param name="pose_file" type="string" value="/mnt/nvme0n1p2/data/0930/gicp_trajectory.tum"/> -->
+    <!-- <param name="pose_file" type="string" value="/mnt/nvme0n1p2/data/0930/gnss_lidar_pose_trajectory.tum"/> -->
+    
+    <param name="pose_file" type="string" value="/mnt/nvme0n1p2/data/nongan_m2/global_lidar_poses_opt.tum"/>
+    <param name="pcd_path" type="string" value="/mnt/nvme0n1p2/data/nongan_m2_o/pcd/"/>
+
+
+
+    <!-- <param name="pose_file" type="string" value="/mnt/nvme0n1p2/data/0930_id4/id4_lidar_trajectory.tum"/>
+    <param name="pcd_path" type="string" value="/mnt/nvme0n1p2/data/0930_id4/pcd/"/> -->
+
+    <!-- <param name="pcd_path" type="string" value="/home/tyjt/Desktop/ros_ws/0923/data1/"/> -->
+    
+    <param name="downsample_size" type="double" value="0.1"/>
+    <param name="marker_size" type="double" value="0.5"/>
+    <param name="save_global_map" type="bool" value="false"/>
+    <param name="pcd_start_index" type="int" value="0"/>
+    <param name="pcd_end_index" type="int" value="10000"/>
+    <param name="pub_step" type="int" value="10"/>
+    
+    <param name="pcd_name_fill_num" type="int" value="6"/> <!--set 5 for kitti07 and 0 for park-->
+  </node>
+
+  <arg name="rviz" default="1"/>
+  <group if="$(arg rviz)">
+    <node launch-prefix="nice" pkg="rviz" type="rviz" name="rviz_"
+    args="-d $(find hba)/rviz_cfg/rosbag.rviz" />
+  </group>
+</launch>
