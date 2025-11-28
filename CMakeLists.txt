@@ -31,14 +31,30 @@ find_package(catkin REQUIRED COMPONENTS
   message_generation
   cmake_modules
   dynamic_reconfigure
+  # sudo apt install -f ros-noetic-livox-ros-driver
   livox_ros_driver
 )
 find_package(OpenCV REQUIRED)
 
 find_package(PCL REQUIRED)
-find_package(Eigen3 REQUIRED)
-find_package(GTSAM REQUIRED QUIET)
 
+# 需要卸载系统自带的3.4，源码安装3.3.7 copy到系统路径下再编译
+# sudo cp -r /path/to/eigen/Eigen /usr/include/eigen3/
+# sudo cp -r /path/to/eigen/unsupported /usr/include/eigen3/
+find_package(Eigen3 REQUIRED)
+
+set(gtsam_DIR "/home/tyjt/Downloads/gtsam/build/")
+# 或者直接设置库和头文件路径
+set(GTSAM_LIBRARY "/home/tyjt/Downloads/gtsam/build/gtsam/libgtsam.so")
+set(GTSAM_INCLUDE_DIR "/home/tyjt/Downloads/gtsam/build/gtsam")
+
+find_package(GTSAM REQUIRED QUIET)
+if(GTSAM_FOUND)
+    message(STATUS "Found GTSAM ${GTSAM_VERSION}")
+else()
+    message(STATUS "GTSAM Not Found")
+endif()
+message(STATUS "GTSAM_DIR=${GTSAM_DIR}")
 catkin_package(
   CATKIN_DEPENDS roscpp rospy std_msgs message_runtime
 )
@@ -49,6 +65,7 @@ include_directories(
   ${PCL_INCLUDE_DIRS}
   ${GTSAM_INCLUDE_DIR}
   ${OpenCV_INCLUDE_DIRS}
+  ${EIGEN3_INCLUDE_DIR} 
 )
 
 catkin_package(
@@ -57,48 +74,80 @@ catkin_package(
   INCLUDE_DIRS
 )
 
-# # Hierarchical Bundle Adjustment
+
+add_executable(Pose3SLAMExample_g2o source/Pose3SLAMExample_g2o.cpp)
+target_link_libraries(Pose3SLAMExample_g2o
+        -Wl,--no-as-needed
+        asan
+        ${catkin_LIBRARIES} ${PCL_LIBRARIES}  
+        gtsam
+        /usr/local/lib/libtbb.so
+        /usr/local/lib/libtbbmalloc.so
+        /usr/local/lib/libtbbmalloc_proxy.so
+        ${LZ4_LIB}
+)
+
+
+add_executable(visualize_with_pose_pcd source/visualize_with_pose_pcd.cpp)
+target_link_libraries(visualize_with_pose_pcd ${catkin_LIBRARIES} ${PCL_LIBRARIES})
+
+
+# # # Hierarchical Bundle Adjustment
 add_executable(hba source/hba.cpp)
-target_link_libraries(hba ${catkin_LIBRARIES} ${PCL_LIBRARIES} gtsam)
+target_link_libraries(hba ${catkin_LIBRARIES} ${PCL_LIBRARIES} gtsam Eigen3::Eigen  
+        /usr/local/lib/libtbb.so
+        /usr/local/lib/libtbbmalloc.so
+        /usr/local/lib/libtbbmalloc_proxy.so
+         )
+# target_link_directories(hba PRIVATE
+#   "/home/tyjt/Downloads/gtsam/build/gtsam" # 包含 libgtsam.so 的路径
+# )
 
-# 读取graph.g2o里面的位姿
-add_executable(visualize_map source/visualize.cpp)
-target_link_libraries(visualize_map ${catkin_LIBRARIES} ${PCL_LIBRARIES})
+# target_include_directories(hba PRIVATE
+#   "/home/username/gtsam" # 包含 gtsam/ 目录的路径
+# )
 
-# 去读取和pcd文件在同一个地方的data文件里面的位姿
-add_executable(visualize_without_g2o source/visualize_without_g2o.cpp)
-target_link_libraries(visualize_without_g2o ${catkin_LIBRARIES} ${PCL_LIBRARIES})
 
-# reproject_pts_img with odometry
-# pose is must
-add_executable(reproject_pts_img source/project.cpp)
-target_link_libraries(reproject_pts_img ${catkin_LIBRARIES}  ${OpenCV_LIBRARIES})
 
-# pose is NOt must . just reproject pts to img if not pose
-add_executable(reproject_img_pts_with_pose source/reproject_img_pts_with_pose.cpp)
-target_link_libraries(reproject_img_pts_with_pose ${catkin_LIBRARIES}  ${OpenCV_LIBRARIES})
+# # # 读取graph.g2o里面的位姿
+# add_executable(visualize_map source/visualize.cpp)
+# target_link_libraries(visualize_map ${catkin_LIBRARIES} ${PCL_LIBRARIES})
 
-# 离线读取img和pcd进行投影 可以确认外参是不是正确
-add_executable(project_points2img_offine source/project_points2img_offine.cpp)
-target_link_libraries(project_points2img_offine ${catkin_LIBRARIES}  ${OpenCV_LIBRARIES}  ${PCL_LIBRARIES} )
 
-# get camera pose for 3dgs
-add_executable(get_camera_pose source/get_camera_pose.cpp)
-target_link_libraries(get_camera_pose ${catkin_LIBRARIES} ${PCL_LIBRARIES})
+# # # 去读取和pcd文件在同一个地方的data文件里面的位姿
+# add_executable(visualize_without_g2o source/visualize_without_g2o.cpp)
+# target_link_libraries(visualize_without_g2o ${catkin_LIBRARIES} ${PCL_LIBRARIES})
 
-# 异常点去除逻辑 目前只使用与livox固态雷达
-add_executable(livox_to_pcd_filter source/livox_to_pcd_filter.cpp)
-target_link_libraries(livox_to_pcd_filter ${catkin_LIBRARIES}  ${PCL_LIBRARIES} )
+# # # reproject_pts_img with odometry
+# # # pose is must
+# add_executable(reproject_pts_img source/project.cpp)
+# target_link_libraries(reproject_pts_img ${catkin_LIBRARIES}  ${OpenCV_LIBRARIES})
 
-# 去除噪点的pcd根据此来生成强度图，然后提取出线特征
-add_executable(get_lidar_intensity_image source/get_lidar_intensity_image.cpp)
-target_link_libraries(get_lidar_intensity_image ${catkin_LIBRARIES}  ${OpenCV_LIBRARIES}  ${PCL_LIBRARIES} )
+# # # pose is NOt must . just reproject pts to img if not pose
+# add_executable(reproject_img_pts_with_pose source/reproject_img_pts_with_pose.cpp)
+# target_link_libraries(reproject_img_pts_with_pose ${catkin_LIBRARIES}  ${OpenCV_LIBRARIES})
 
-# 把关键帧写成文件 这个是将所有的帧保存下来
-add_executable(odom2posegraph source/odom2posegraph.cpp)
-target_link_libraries(odom2posegraph ${catkin_LIBRARIES}  ${PCL_LIBRARIES} )
+# # 离线读取img和pcd进行投影 可以确认外参是不是正确
+# add_executable(project_points2img_offine source/project_points2img_offine.cpp)
+# target_link_libraries(project_points2img_offine ${catkin_LIBRARIES}  ${OpenCV_LIBRARIES}  ${PCL_LIBRARIES} )
 
-# 这个按距离阈值保存
-add_executable(odom2posegraph_keyframe source/odom2posegraph_keyframe.cpp)
-target_link_libraries(odom2posegraph_keyframe ${catkin_LIBRARIES}  ${PCL_LIBRARIES} )
+# # get camera pose for 3dgs
+# add_executable(get_camera_pose source/get_camera_pose.cpp)
+# target_link_libraries(get_camera_pose ${catkin_LIBRARIES} ${PCL_LIBRARIES})
+
+# # 异常点去除逻辑 目前只使用与livox固态雷达
+# add_executable(livox_to_pcd_filter source/livox_to_pcd_filter.cpp)
+# target_link_libraries(livox_to_pcd_filter ${catkin_LIBRARIES}  ${PCL_LIBRARIES} )
+
+# # 去除噪点的pcd根据此来生成强度图，然后提取出线特征
+# add_executable(get_lidar_intensity_image source/get_lidar_intensity_image.cpp)
+# target_link_libraries(get_lidar_intensity_image ${catkin_LIBRARIES}  ${OpenCV_LIBRARIES}  ${PCL_LIBRARIES}  Eigen3::Eigen )
+
+# # 把关键帧写成文件 这个是将所有的帧保存下来
+# add_executable(odom2posegraph source/odom2posegraph.cpp)
+# target_link_libraries(odom2posegraph ${catkin_LIBRARIES}  ${PCL_LIBRARIES} )
+
+# # 这个按距离阈值保存
+# add_executable(odom2posegraph_keyframe source/odom2posegraph_keyframe.cpp)
+# target_link_libraries(odom2posegraph_keyframe ${catkin_LIBRARIES}  ${PCL_LIBRARIES} )
 

@@ -41,9 +41,9 @@ public:
     layer_num = 1;
     max_iter = 20;
     downsample_size = 0.1;
-    voxel_size = 1.50 ; // 2.0 . biger when odom is bad, then set smaller
-    eigen_ratio = 0.075 ;
-    reject_ratio = 0.075 ; //0.1;
+    voxel_size = 5.0 ; // 2.0 . biger when odom is bad, then set smaller
+    eigen_ratio = 0.15;
+    reject_ratio = 0.15 ; //0.1;
     pose_vec.clear(); mthreads.clear(); pcds.clear();
     hessians.clear(); mem_costs.clear();
   }
@@ -127,6 +127,7 @@ public:
   int thread_num, total_layer_num;
   std::vector<LAYER> layers;
   std::string data_path;
+  std::vector<double> st_pose;
 
   HBA(int total_layer_num_, std::string data_path_, int thread_num_)
   {
@@ -142,13 +143,15 @@ public:
     }
     layers[0].data_path = data_path;
     // layers[0].pose_vec = mypcl::read_pose(data_path + "pose.json");
-    
-    std::ifstream file_HBA( data_path + "HBA_pose.txt" );
+    st_pose = mypcl::get_pose_stamp();
+
+    // std::ifstream file_HBA( data_path + "HBA_pose.txt" );
+    std::ifstream file_HBA("/mnt/nvme0n1p2/data/0909/1/optimized_global_keyframe_poses.txt" );
     std::ifstream file_GTSAM( data_path + "GTSAM_pose.txt" );
     std::ifstream file_key_pose( data_path + "key_pose.txt" );
     if ( file_HBA.good() )
     {
-      layers[0].pose_vec = mypcl::read_pose(data_path + "HBA_pose.txt");
+      layers[0].pose_vec = mypcl::read_pose("/mnt/nvme0n1p2/data/0909/1/optimized_global_keyframe_poses.txt");
       ROS_WARN("read %sHBA_pose.txt", data_path.c_str());
     }
     else if(file_GTSAM.good())
@@ -163,7 +166,8 @@ public:
     } else
     {
       ROS_WARN(" can not read pose file . try to read %spose_graph/graph.g2o ", data_path.c_str());
-      layers[0].pose_vec = mypcl::readPosesFromG2O(data_path + "pose_graph/graph.g2o");
+      // layers[0].pose_vec = mypcl::readPosesFromG2O(data_path + "pose_graph/graph.g2o");
+      layers[0].pose_vec = mypcl::readPosesFromG2O(data_path + "key_pose.txt");
     }
     
     // layers[0].pose_vec = mypcl::read_pose(data_path + "key_pose.txt");

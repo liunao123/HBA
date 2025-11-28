@@ -28,18 +28,58 @@ namespace mypcl
     Eigen::Vector3d t;
   };
 
-  void loadPCD(std::string filePath, int pcd_fill_num, pcl::PointCloud<PointType>::Ptr& pc, int num,
+  void loadPCD(std::string filePath, int pcd_fill_num, pcl::PointCloud<PointType>::Ptr& pc, double num,
                std::string prefix = "")
   {
     std::stringstream ss;
-    if(pcd_fill_num > 0)
-      ss << std::setw(pcd_fill_num) << std::setfill('0') << num;
-    else
-      ss << num;
-    // pcl::io::loadPCDFile(filePath + prefix + ss.str() + ".pcd", *pc);
-    std::string pcd_st = filePath + ss.str() + "/cloud.pcd";
-    // ROS_WARN("pcd file %s " , pcd_st.c_str());
+    // ss << num;
+    ss << std::fixed << std::setprecision(3) << num;
+    std::string pcd_st = filePath + ss.str() + ".pcd";
+    ROS_WARN("pcd file %s " , pcd_st.c_str());
+    
+    pcl::VoxelGrid< PointType > voxel_filter;
+    // 对目标点云进行距离滤波和体素滤波
+    pc->clear();
+    pcl::PointCloud< PointType >::Ptr target_raw(new pcl::PointCloud<PointType>);
+    pcl::PointCloud< PointType >::Ptr target_filtered(new pcl::PointCloud<PointType>);
+    // pcl::io::loadPCDFile( pcd_st , *target_raw);
     pcl::io::loadPCDFile( pcd_st , *pc);
+    // ROS_WARN("pcd file size %d " , target_raw->points.size());
+    
+    // // 距离滤波：过滤掉距离过近和过远的点
+    // const float min_distance = 3.0f;   // 最小距离 3米
+    // const float max_distance = 100.0f; // 最大距离 120米
+    // target_filtered->clear();
+    // target_filtered->reserve(target_raw->size());
+    
+    // for (const auto& point : target_raw->points) {
+    //     float distance = std::sqrt(point.x * point.x + point.y * point.y + point.z * point.z);
+    //     if (distance >= min_distance && distance <= max_distance) {
+    //         target_filtered->points.push_back(point);
+    //     }
+    // }
+    // target_filtered->width = target_filtered->points.size();
+    // target_filtered->height = 1;
+    // target_filtered->is_dense = false;
+    
+    // ROS_WARN("After distance filter: %d points (min: %.1fm, max: %.1fm)", 
+    //          (int)target_filtered->points.size(), min_distance, max_distance);
+    
+    // // 体素滤波
+    // voxel_filter.setInputCloud(target_filtered);
+    // voxel_filter.setLeafSize(0.2f, 0.2f, 0.2f);
+    // voxel_filter.filter(*pc);
+    // ROS_WARN("After voxel filter: %d points", (int)pc->points.size());
+ 
+    // std::stringstream ss;
+    // if(pcd_fill_num > 0)
+    //   ss << std::setw(pcd_fill_num) << std::setfill('0') << num;
+    // else
+    //   ss << num;
+    // // pcl::io::loadPCDFile(filePath + prefix + ss.str() + ".pcd", *pc);
+    // std::string pcd_st = filePath + ss.str() + "/cloud.pcd";
+    // // ROS_WARN("pcd file %s " , pcd_st.c_str());
+    // pcl::io::loadPCDFile( pcd_st , *pc);
   }
 
   void savdPCD(std::string filePath, int pcd_fill_num, pcl::PointCloud<PointType>::Ptr& pc, int num)
@@ -64,7 +104,7 @@ namespace mypcl
     std::vector<pose> pose_vec;
     std::fstream file;
     file.open(filename);
-    double tx, ty, tz, w, x, y, z;
+    double num , tx, ty, tz, w, x, y, z;
     double st;
     std::string header;
     std::cout << "pose filename is " << filename << std::endl;

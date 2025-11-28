@@ -104,8 +104,10 @@ void parallel_comp(LAYER& layer, int thread_id, LAYER& next_layer)
         {
           if(loop == 0)
           {
+            // ROS_ERROR("107");
             pcl::PointCloud<PointType>::Ptr pc(new pcl::PointCloud<PointType>);
-            mypcl::loadPCD(layer.data_path + "poseGraph/", pcd_name_fill_num, pc, j);
+            // mypcl::loadPCD(layer.data_path + "poseGraph/", pcd_name_fill_num, pc, j);
+            mypcl::loadPCD(layer.data_path , pcd_name_fill_num, pc, st_pose[j]);
             raw_pc[j-i*GAP] = pc;
           }
           src_pc[j-i*GAP] = (*raw_pc[j-i*GAP]).makeShared();
@@ -210,7 +212,9 @@ void parallel_tail(LAYER& layer, int thread_id, LAYER& next_layer)
           if(loop == 0)
           {
             pcl::PointCloud<PointType>::Ptr pc(new pcl::PointCloud<PointType>);
-            mypcl::loadPCD(layer.data_path + "poseGraph/", pcd_name_fill_num, pc, j );
+            // mypcl::loadPCD(layer.data_path + "poseGraph/", pcd_name_fill_num, pc, j );
+            // ROS_ERROR("215");
+            mypcl::loadPCD(layer.data_path , pcd_name_fill_num, pc, st_pose[j]);
             raw_pc[j-i*GAP] = pc;
           }
           src_pc[j-i*GAP] = (*raw_pc[j-i*GAP]).makeShared();
@@ -319,8 +323,12 @@ void parallel_tail(LAYER& layer, int thread_id, LAYER& next_layer)
         {
           if(loop == 0)
           {
+            ROS_ERROR("327");
             pcl::PointCloud<PointType>::Ptr pc(new pcl::PointCloud<PointType>);
-            mypcl::loadPCD(layer.data_path + "poseGraph/", pcd_name_fill_num, pc, j );
+            // mypcl::loadPCD(layer.data_path + "poseGraph/", pcd_name_fill_num, pc, j );
+            mypcl::loadPCD(layer.data_path , pcd_name_fill_num, pc, st_pose[j]);
+
+
             raw_pc[j-i*GAP] = pc;
           }
           src_pc[j-i*GAP] = (*raw_pc[j-i*GAP]).makeShared();          

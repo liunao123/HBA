@@ -70,6 +70,7 @@ bool stop = false;
 bool exit_flag = false;
 size_t i = 0;
 std::vector<double> st_pose;  // 添加缺失的时间戳向量
+std::vector<std::string> pcd_name;  // 添加缺失的时间戳向量
 
 struct pose
 {
@@ -126,15 +127,30 @@ std::vector<pose> read_pose(std::string filename,
   double num, st;
   std::string header;
   std::cout << "pose filename is " << filename << std::endl;
-  while (!file.eof())
+  std::string line;
+
+  while (getline(file, line))
   {
-    // file >> num >> st >> tx >> ty >> tz >> x >> y >> z >> w;
-    file >> st >> tx >> ty >> tz >> x >> y >> z >> w;
-    Eigen::Quaterniond q(w, x, y, z);
-    Eigen::Vector3d t(tx, ty, tz);
-    // pose_vec.push_back(pose(qe * q, qe * t + te));
-    pose_vec.push_back(pose( q, t ));
-    st_pose.push_back(st);
+    // Skip comments and empty lines
+    if (line.empty() || line[0] == '#')
+    {
+      continue;
+    }
+    istringstream iss(line);
+    long double timestamp;
+    double tx, ty, tz, qx, qy, qz, qw;
+    if (iss >> timestamp >> tx >> ty >> tz >> qx >> qy >> qz >> qw)
+    {
+      // file >> num >> st >> tx >> ty >> tz >> x >> y >> z >> w;
+      // file >> st >> tx >> ty >> tz >> x >> y >> z >> w;
+      Eigen::Quaterniond q(qw, qx, qy, qz);
+      Eigen::Vector3d t(tx, ty, tz);
+      // pose_vec.push_back(pose(qe * q, qe * t + te));
+      pose_vec.push_back(pose(q, t));
+      st_pose.push_back(timestamp);
+      pcd_name.push_back( std::to_string( timestamp ) );
+      std::cout << "   timestamp:   " << std::to_string(  timestamp ) << std::endl;
+    }
   }
   file.close();
   pose_vec.pop_back();
@@ -250,8 +266,10 @@ int main(int argc, char** argv)
     
     std::ostringstream oss;
     oss << std::fixed << std::setprecision(3) << st_pose[i];
-    std::string pcd_st = pcd_path + oss.str() + "_o.pcd";
-    // std::cout << i << "   pcd_st: " << pcd_st << std::endl;
+    std::string pcd_st = pcd_path + oss.str() + "_surf.pcd";
+    // std::string pcd_st = pcd_path + pcd_name[i] + ".pcd";
+    // std::string pcd_st = pcd_path + std::to_string( int(st_pose[i])) + ".pcd";
+    std::cout << i << "   pcd_st: " << pcd_st << std::endl;
 
     if (pcl::io::loadPCDFile(pcd_st, *pc_surf) == -1)
     {
@@ -273,12 +291,13 @@ int main(int argc, char** argv)
     // key_pose.block<3, 3>(0, 0) = qq.toRotationMatrix();
 
     // 设置平移部分
-    if (pose_vec[i].t.y() > 10000.0)
+    if ( std::fabs(pose_vec[i].t.y()) > 10.0  || std::fabs(pose_vec[i].t.x()) > 10.0  )
     {
       pose_vec[i].t -= offset;
     }
 
     key_pose.block<3, 1>(0, 3) = pose_vec[i].t;
+    std::cout << i << "  key_pose: " << key_pose << std::endl;
 
     pcl::PointCloud<pointtype>::Ptr global_pts(new pcl::PointCloud<pointtype>);
     
@@ -328,7 +347,7 @@ int main(int argc, char** argv)
     transform.setOrigin(tf::Vector3(pose_vec[i].t(0), pose_vec[i].t(1), pose_vec[i].t(2)));
     tf::Quaternion q(pose_vec[i].q.x(), pose_vec[i].q.y(), pose_vec[i].q.z(), pose_vec[i].q.w());
     transform.setRotation(q);
-    br.sendTransform(tf::StampedTransform(transform, ros::Time().fromSec(st_pose[i]) , "odom", "base_link"));
+    // br.sendTransform(tf::StampedTransform(transform, ros::Time().fromSec(st_pose[i]) , "odom", "base_link"));
 
     // publish pose trajectory
     visualization_msgs::Marker marker;
