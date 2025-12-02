@@ -266,8 +266,8 @@ int main(int argc, char** argv)
     
     std::ostringstream oss;
     oss << std::fixed << std::setprecision(3) << st_pose[i];
-    std::string pcd_st = pcd_path + oss.str() + "_surf.pcd";
-    // std::string pcd_st = pcd_path + pcd_name[i] + ".pcd";
+    // std::string pcd_st = pcd_path + oss.str() + "_surf.pcd";
+    std::string pcd_st = pcd_path + oss.str() + ".pcd";
     // std::string pcd_st = pcd_path + std::to_string( int(st_pose[i])) + ".pcd";
     std::cout << i << "   pcd_st: " << pcd_st << std::endl;
 

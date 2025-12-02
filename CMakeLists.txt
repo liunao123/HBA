@@ -73,7 +73,21 @@ catkin_package(
   DEPENDS EIGEN3 PCL
   INCLUDE_DIRS
 )
+add_library(nano_gicp_lib
+  include/nano_gicp/nanoflann.cc
+  include/nano_gicp/lsq_registration.cc
+  include/nano_gicp/nano_gicp.cc
+)
 
+target_link_libraries(nano_gicp_lib
+  ${PCL_LIBRARIES}
+  ${OPENMP_LIBS}
+)
+
+target_include_directories(nano_gicp_lib PUBLIC
+  nano_gicp/include
+  ${PCL_INCLUDE_DIRS}
+)
 
 add_executable(Pose3SLAMExample_g2o source/Pose3SLAMExample_g2o.cpp)
 target_link_libraries(Pose3SLAMExample_g2o
@@ -85,6 +99,7 @@ target_link_libraries(Pose3SLAMExample_g2o
         /usr/local/lib/libtbbmalloc.so
         /usr/local/lib/libtbbmalloc_proxy.so
         ${LZ4_LIB}
+        nano_gicp_lib
 )
 
 
