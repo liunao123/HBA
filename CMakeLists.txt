@@ -5,11 +5,13 @@ set(CMAKE_BUILD_TYPE "Release")
 ADD_COMPILE_OPTIONS(-std=c++17)
 set(CMAKE_CXX_FLAGS "-std=c++17 -O3" )
 set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -fexceptions")
-set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD 20)
+# set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -pthread -std=c++0x -std=c++17 -fexceptions")
 SET(CMAKE_RUNTIME_OUTPUT_DIRECTORY ../bin)
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++17 -ltbb -pthread -std=c++1z -std=c++17 -fexceptions")
 
 find_package(catkin REQUIRED COMPONENTS
   roscpp
@@ -36,19 +38,42 @@ find_package(catkin REQUIRED COMPONENTS
 )
 find_package(OpenCV REQUIRED)
 
+# ROS (Noetic) is typically built against the system PCL. If another PCL is
+# installed under /usr/local, mixing them can cause ABI conflicts.
+# Force using the system PCLConfig.cmake from /usr/lib to keep dependencies consistent.
+# if (EXISTS "/usr/lib/x86_64-linux-gnu/cmake/pcl/PCLConfig.cmake")
+#   set(PCL_DIR "/usr/lib/x86_64-linux-gnu/cmake/pcl" CACHE PATH "PCL CMake config directory" FORCE)
+# endif()
+# find_package(PCL 1.15 REQUIRED)
 find_package(PCL REQUIRED)
+message(STATUS "PCL_DIR: ${PCL_DIR}")
+message(STATUS "PCL version: ${PCL_VERSION}")
+
+# Removed explicit find_package(chcnav). We only need its generated headers; building the chcnav package will place them in ${CATKIN_DEVEL_PREFIX}/include.
+# find_package(GeographicLib REQUIRED)
 
 # 需要卸载系统自带的3.4，源码安装3.3.7 copy到系统路径下再编译
 # sudo cp -r /path/to/eigen/Eigen /usr/include/eigen3/
 # sudo cp -r /path/to/eigen/unsupported /usr/include/eigen3/
 find_package(Eigen3 REQUIRED)
+find_package(yaml-cpp REQUIRED)
 
-set(gtsam_DIR "/home/tyjt/Downloads/gtsam/build/")
+# oneTBB 在M-detector里已经有了 这里就不需要再下载一份了
+#
+set(TBB_INCLUDE_DIR "/home/xf/Desktop/catkin_ws/src/M-detector/oneTBB-2019_U8/include")
+set(TBB_LIBRARY_DIR "/home/xf/Desktop/catkin_ws/src/M-detector/oneTBB-2019_U8/build/linux_intel64_gcc_cc11.4.0_libc2.35_kernel6.8.0_release")
+include_directories(${TBB_INCLUDE_DIR})
+link_directories(${TBB_LIBRARY_DIR})
+find_package(TBB REQUIRED)
+
+# 源码编译的gtsam 4.1.1
+# 设置GTSAM的路径
+set(gtsam_DIR "/home/xf/Documents/gtsam-4.1.1/build/")
 # 或者直接设置库和头文件路径
-set(GTSAM_LIBRARY "/home/tyjt/Downloads/gtsam/build/gtsam/libgtsam.so")
-set(GTSAM_INCLUDE_DIR "/home/tyjt/Downloads/gtsam/build/gtsam")
+set(GTSAM_LIBRARY "/home/xf/Documents/gtsam-4.1.1/build/gtsam/libgtsam.so")
+set(GTSAM_INCLUDE_DIR "/home/xf/Documents/gtsam-4.1.1/build/gtsam")
 
-find_package(GTSAM REQUIRED QUIET)
+find_package(GTSAM REQUIRED)
 if(GTSAM_FOUND)
     message(STATUS "Found GTSAM ${GTSAM_VERSION}")
 else()
@@ -61,18 +86,24 @@ catkin_package(
 
 include_directories(
   include
+  ${CATKIN_DEVEL_PREFIX}/include
   ${catkin_INCLUDE_DIRS}
   ${PCL_INCLUDE_DIRS}
   ${GTSAM_INCLUDE_DIR}
   ${OpenCV_INCLUDE_DIRS}
-  ${EIGEN3_INCLUDE_DIR} 
+  ${EIGEN3_INCLUDE_DIR}
+  nano_gicp/include
+  ${YAML_CPP_INCLUDE_DIRS}
 )
+
+link_directories(/usr/lib/x86_64-linux-gnu)
 
 catkin_package(
   CATKIN_DEPENDS geometry_msgs nav_msgs roscpp rospy std_msgs visualization_msgs tf
   DEPENDS EIGEN3 PCL
   INCLUDE_DIRS
 )
+
 add_library(nano_gicp_lib
   include/nano_gicp/nanoflann.cc
   include/nano_gicp/lsq_registration.cc
@@ -89,17 +120,35 @@ target_include_directories(nano_gicp_lib PUBLIC
   ${PCL_INCLUDE_DIRS}
 )
 
-add_executable(Pose3SLAMExample_g2o source/Pose3SLAMExample_g2o.cpp)
-target_link_libraries(Pose3SLAMExample_g2o
-        -Wl,--no-as-needed
-        asan
-        ${catkin_LIBRARIES} ${PCL_LIBRARIES}  
-        gtsam
-        /usr/local/lib/libtbb.so
-        /usr/local/lib/libtbbmalloc.so
-        /usr/local/lib/libtbbmalloc_proxy.so
-        ${LZ4_LIB}
-        nano_gicp_lib
+add_executable(01_get_raw_data source/01_get_raw_data.cpp)
+target_link_libraries(01_get_raw_data
+  ${catkin_LIBRARIES}
+  ${PCL_LIBRARIES}
+  ${GeographicLib_LIBRARIES}
+  Geographic
+  yaml-cpp
+)
+
+add_executable(02_Pose3SLAMExample_g2o source/02_Pose3SLAMExample_g2o.cpp)
+find_package(CURL REQUIRED)
+find_package(TIFF REQUIRED)
+
+# Ensure GDAL dependencies are resolved
+find_package(GDAL REQUIRED)
+
+# Add CURL, TIFF, and GDAL libraries to Pose3SLAMExample_g2o
+set(GDAL_LIBRARIES ${GDAL_LIBRARIES} ${CURL_LIBRARIES} ${TIFF_LIBRARIES})
+
+target_link_libraries(02_Pose3SLAMExample_g2o
+  ${catkin_LIBRARIES} 
+  ${PCL_LIBRARIES}  
+  ${LZ4_LIB}
+  ${GDAL_LIBRARIES}
+  nano_gicp_lib
+  gtsam
+  tbb
+  yaml-cpp
+  Geographic
 )
 
 
@@ -108,12 +157,8 @@ target_link_libraries(visualize_with_pose_pcd ${catkin_LIBRARIES} ${PCL_LIBRARIE
 
 
 # # # Hierarchical Bundle Adjustment
-add_executable(hba source/hba.cpp)
-target_link_libraries(hba ${catkin_LIBRARIES} ${PCL_LIBRARIES} gtsam Eigen3::Eigen  
-        /usr/local/lib/libtbb.so
-        /usr/local/lib/libtbbmalloc.so
-        /usr/local/lib/libtbbmalloc_proxy.so
-         )
+# add_executable(hba source/hba.cpp)
+## target_link_libraries(hba ${catkin_LIBRARIES} ${PCL_LIBRARIES} gtsam Eigen3::Eigen  TBB::tbb)
 # target_link_directories(hba PRIVATE
 #   "/home/tyjt/Downloads/gtsam/build/gtsam" # 包含 libgtsam.so 的路径
 # )
