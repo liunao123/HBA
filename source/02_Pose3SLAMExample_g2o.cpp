@@ -37,6 +37,10 @@
 #include <pcl/registration/gicp.h>
 #include <pcl/filters/voxel_grid.h>
 #include <pcl/common/transforms.h>
+#include <pcl/point_cloud.h>
+#include <pcl/common/common.h>
+#include <pcl/filters/radius_outlier_removal.h>
+#include <pcl/filters/crop_box.h>
 
 // Use nano_gicp instead of PCL GICP
 #include <nano_gicp/nano_gicp.h>
@@ -48,13 +52,9 @@ using namespace std;
 using namespace gtsam;
 
 typedef pcl::PointXYZI pointtype;
-// typedef std::shared_ptr<pcl::PointCloud<pointtype>> cloud_ptr;
 typedef pcl::PointCloud<pointtype>::Ptr cloud_ptr;
 
-// Global configuration variables (definitions - declared in common.hpp)
-float ref_x = 662346.21199479;
-float ref_y = 4873549.49830244;
-float ref_z = 0.0;   //   201.48359680
+ 
 
 
 // Voxel filter parameters
@@ -202,12 +202,15 @@ void applyAdvancedVoxelFilter(const pcl::PointCloud<pointtype> &input_cloud,
     // 首先进行距离和高度滤波
     for (const auto &p : input_cloud.points)
     {
-        Eigen::Vector3d vec(p.x, p.y, p.z);
-        const float distance = vec.norm();
-        if (distance < min_distance || distance > max_distance)
+        if (std::abs(p.x) < min_distance && std::abs(p.y) < min_distance)
         {
             continue;
         }
+        if (std::abs(p.x) > max_distance || std::abs(p.y) > max_distance)
+        {
+            continue;
+        }
+
         if (p.z < min_z || p.z > max_z)
         {
             continue;
@@ -241,41 +244,60 @@ cloud_ptr getCachedPointCloud(std::string pcd_filename)
         auto it = pointCloudCache.find(pcd_filename);
         if (it != pointCloudCache.end() && it->second)
         {
-            std::cout << "Using cached point cloud: " << pcd_filename 
-                      << " (" << it->second->size() << " points)" << std::endl;
+            // std::cout << "Using cached point cloud: " << pcd_filename 
+            //           << " (" << it->second->size() << " points)" << std::endl;
             return it->second;
         }
     }
 
     // 缓存中没有，需要加载
-    cloud_ptr cloud(new pcl::PointCloud<pointtype>());
-
+    cloud_ptr raw_cloud(new pcl::PointCloud<pointtype>());
+    cloud_ptr cropped(new pcl::PointCloud<pointtype>());
     try
     {
-    
-    if (pcl::io::loadPCDFile<pointtype>(pcd_filename, *cloud) == -1)
-    {
-        ROS_ERROR("Failed to load point cloud: %s", pcd_filename.c_str());
-        // return nullptr;
-    }  
-        
+        if (pcl::io::loadPCDFile<pointtype>(pcd_filename, *raw_cloud) == -1)
+        {
+            ROS_ERROR("Failed to load point cloud: %s", pcd_filename.c_str());
+            // return nullptr;
+        }
+        // 首先进行距离和高度滤波
+        const float crop_near_range = 5.0; // 剪裁近距离范围，单位：米
+        for (const auto &p : raw_cloud->points)
+        {
+            if ( std::abs(p.x) < crop_near_range &&  std::abs(p.y) < crop_near_range)
+            {
+                continue;
+            }
+            pcl::PointXYZI point;
+            point.x = p.x;
+            point.y = p.y;
+            point.z = p.z;
+            point.intensity = p.intensity;
+            cropped->points.push_back(point);
+        }
+        // for testing
+        // pcl::io::savePCDFileBinary("cropped.pcd", *cropped);
+        // exit(0);
+        // raw_cloud->swap(*cropped);
     }
     catch(const std::exception& e)
     {
         std::cerr << e.what() << '\n';
     }
-    // std::cout << "Loaded point cloud: " << pcd_filename << " (" << cloud->size() << " points)" << std::endl;
+    // std::cout << "Loaded point cloud: " << pcd_filename << " (" << cropped->size() << " points)" << std::endl;
     
-    cloud_ptr cloud_ds(new pcl::PointCloud<pointtype>());
-    applyAdvancedVoxelFilter(*cloud, *cloud_ds);
+    // cloud_ptr cloud_ds(new pcl::PointCloud<pointtype>());
+    // applyAdvancedVoxelFilter(*cropped, *cloud_ds);
+
+    // 必须要设置点云的基本属性
+    cropped->width = cropped->points.size();
+    cropped->height = 1;
+    cropped->is_dense = raw_cloud->is_dense;
 
     // 存入缓存
-    {
-        std::lock_guard<std::mutex> lock(cacheMutex);
-        pointCloudCache[pcd_filename] = cloud_ds;
-    }
-
-    return cloud_ds;
+    std::lock_guard<std::mutex> lock(cacheMutex);
+    pointCloudCache[pcd_filename] = cropped;
+    return cropped;
 }
 
 // Function to read timestamps from TUM file
@@ -450,10 +472,10 @@ cloud_ptr loadPCDForIdTimestamp(const std::string &pcd_dir, uint64_t id, double 
     ss << pcd_dir;
     if (!pcd_dir.empty() && pcd_dir.back() != '/' && pcd_dir.back() != '\\')
         ss << '/';
-    ss << std::fixed << std::setprecision(3) << timestamp << ".pcd";
-    // ss << id << "_" << std::fixed << std::setprecision(3) << timestamp << ".pcd";
+    // ss << std::fixed << std::setprecision(3) << timestamp << ".pcd";
+    ss << id << "_" << std::fixed << std::setprecision(3) << timestamp << ".pcd";
     std::string filename = ss.str();
-    // std::cout << "filename " << filename << " done " << std::endl;
+    std::cout << "pcd filename: " << filename <<  std::endl;
 
     cloud_ptr cloud(new pcl::PointCloud<pointtype>());
     cloud = getCachedPointCloud(filename);
@@ -492,8 +514,6 @@ std::vector<TumPose> getSameTimePose(const std::vector<TumPose> &lio_pose,
 
 // Write a vector of TumPose back to a TUM-formatted file.
 // This will reverse the coordinate/time adjustments made in readTumPose:
-// - add back the reference origin for x/y
-// - add back the timestamp offset
 bool savePoseVectorToTUM(const std::vector<TumPose> &poses, const string &filename)
 {
     if (poses.empty())
@@ -512,8 +532,8 @@ bool savePoseVectorToTUM(const std::vector<TumPose> &poses, const string &filena
     for (const auto &p : poses)
     {
         double out_ts = p.timestamp ; // + ts_offset;
-        double tx = p.t.x() ; // + ref_x;
-        double ty = p.t.y() ; // + ref_y;
+        double tx = p.t.x();
+        double ty = p.t.y();
         double tz = p.t.z();
 
         // Tum format: timestamp tx ty tz qx qy qz qw
@@ -607,12 +627,6 @@ bool runGICPGetRelative(const cloud_ptr &target,
         return false;
     }
 
-    if (target->empty() || source->empty())
-    {
-        ROS_WARN("runGICPGetRelative: empty input clouds (target=%zu, source=%zu)", target->size(), source->size());
-        return false;
-    }
-
     // validate init_guess (finite)
     bool finite = true;
     for (int r = 0; r < 4 && finite; ++r)
@@ -626,12 +640,11 @@ bool runGICPGetRelative(const cloud_ptr &target,
     }
 
     ROS_INFO("runGICP: target_ds=%zu source_ds=%zu (voxel=%.3f)", target->size(), source->size(), g_voxel_size);
-
-    if (target->empty() || source->empty())
-    {
-        ROS_WARN("runGICPGetRelative: downsampled clouds are empty");
-        return false;
-    }
+    cloud_ptr target_ds(new pcl::PointCloud<pointtype>());
+    cloud_ptr source_ds(new pcl::PointCloud<pointtype>());
+    applyAdvancedVoxelFilter(*source, *source_ds);
+    applyAdvancedVoxelFilter(*target, *target_ds);
+    ROS_INFO("runGICP: target_ds=%zu source_ds=%zu (voxel=%.3f)", target_ds->size(), source_ds->size(), g_voxel_size);
 
     nano_gicp::NanoGICP<pointtype, pointtype> gicp;
     gicp.setCorrespondenceRandomness(g_gicp_correspondence_randomness);
@@ -641,8 +654,8 @@ bool runGICPGetRelative(const cloud_ptr &target,
     gicp.setRotationEpsilon(g_gicp_rotation_epsilon);
     gicp.setInitialLambdaFactor(g_gicp_initial_lambda_factor);
     gicp.setRegularizationMethod(nano_gicp::RegularizationMethod::PLANE);
-    gicp.setInputSource(source);
-    gicp.setInputTarget(target);
+    gicp.setInputSource(source_ds);
+    gicp.setInputTarget(target_ds);
     gicp.calculateSourceCovariances();
     gicp.calculateTargetCovariances();
 
@@ -692,15 +705,20 @@ void addLoopToGraph(NonlinearFactorGraph &graph,
     std::sort(keys.begin(), keys.end());
 
     const int step = loop_config.step;
+    int max_loop_index = keys.size() - step;
 
     if ( loop_config.end_index > keys.size() )
     {
         ROS_ERROR("addLoopToGraph: invalid loop_config start_index or end_index");
-        exit(-1);
+        // exit(-1);
+    }
+    else
+    {
+        max_loop_index = loop_config.end_index ;
     }
 
     // for (size_t i = 0; i < keys.size()  ; i = i + step)
-    for (size_t i = loop_config.start_index; i < loop_config.end_index  ; i = i + step)
+    for (size_t i = loop_config.start_index; i < max_loop_index ; i = i + step)
     {
         Key ki = keys[i];
         if (!initial.exists<Pose3>(ki))
@@ -876,11 +894,6 @@ bool convertENUToUTMWithMeridianConvergence(
     // 或者从配置中读取参考点经纬度
     // 这里使用第一个odom位姿对应的经纬度作为参考
     
-    // 从全局变量获取UTM参考点（这些值应该对应某个经纬度）
-    double ref_utm_x = ref_x;  // UTM东向坐标
-    double ref_utm_y = ref_y;  // UTM北向坐标
-    double ref_utm_z = ref_z;  // 高程
-    
     // 假设我们需要计算子午线收敛角
     // 对于中国地区，通常使用6度分带或3度分带
     // 子午线收敛角计算公式: gamma = (lon - lon0) * sin(lat)
@@ -956,7 +969,6 @@ bool convertENUToUTMWithMeridianConvergence(
             Eigen::Matrix3d R_utm = rot_z * R_enu;
             Eigen::Quaterniond q_utm(R_utm);
             // ENU坐标转UTM坐标（只旋转，不平移）
-            // ! todo : 加上参考点的UTM坐标，存疑？？？？？
             Eigen::Vector3d t_utm = rot_z * pose.t ; // + opt_enu_poses[0].t ;
 
             // 写入TUM文件：timestamp utm_x utm_y alt qx qy qz qw
@@ -972,7 +984,6 @@ bool convertENUToUTMWithMeridianConvergence(
     std::cout << "Output saved to: " << output_file << std::endl;
     std::cout << "=========================================================================\n" << std::endl;
     return true;
-
 }
 
 
@@ -1001,6 +1012,7 @@ void pts_to_world(const cloud_ptr &pts_local,
     Eigen::Matrix4f key_pose = Eigen::Matrix4f::Identity();
     key_pose.block<3, 3>(0, 0) = pose.q.toRotationMatrix().cast<float>();
     key_pose.block<3, 1>(0, 3) = pose.t.cast<float>();
+    std::cout << "pts_to_world: key_pose:\n" << key_pose << std::endl;
 
     try
     {
@@ -1013,7 +1025,7 @@ void pts_to_world(const cloud_ptr &pts_local,
     }
 }
 
-void save_map_grid(std::string tile_output_dir, const cloud_ptr &transformedCloud)
+void save_map_grid(std::string tile_output_dir, const cloud_ptr &transformedCloud, const std::vector<TumPose> &key_poses)
 {
     {
       std::string tile_dir = tile_output_dir;
@@ -1040,10 +1052,20 @@ void save_map_grid(std::string tile_output_dir, const cloud_ptr &transformedClou
           std::unordered_map<std::string, pcl::PointCloud<pcl::PointXYZI>::Ptr> tile_clouds;
           const double tile_size = 200.0;
           
+          // Ensure tile_x and tile_y are positive and start from 0 using PCL's library
+          pcl::PointCloud<pcl::PointXYZ> cloud;
+          for (const auto& pose : key_poses) {
+              cloud.push_back(pcl::PointXYZ(pose.t.x(), pose.t.y(), 0));
+          }
+          pcl::PointXYZ min_pt, max_pt;
+          pcl::getMinMax3D(cloud, min_pt, max_pt);
+          // 保证比点云的最小值还要小一些，避免边界点落在负tile索引
+          double min_x = min_pt.x - 200.0;
+          double min_y = min_pt.y - 200.0;
           for (const auto &pt : transformedCloud->points)
           {
-            int tile_x = static_cast<int>(std::floor(pt.x / tile_size));
-            int tile_y = static_cast<int>(std::floor(pt.y / tile_size));
+            int tile_x = static_cast<int>(std::floor((pt.x - min_x) / tile_size));
+            int tile_y = static_cast<int>(std::floor((pt.y - min_y) / tile_size));
             std::string key = std::to_string(tile_x) + "_" + std::to_string(tile_y);
             auto &cloud_ptr = tile_clouds[key];
             if (!cloud_ptr)
@@ -1053,11 +1075,15 @@ void save_map_grid(std::string tile_output_dir, const cloud_ptr &transformedClou
             cloud_ptr->points.push_back(pt);
           }
           
-          for (const auto &kv : tile_clouds)
+          for (auto &kv : tile_clouds)
           {
             if (kv.second->empty())
             continue;
             std::string filename = tile_dir + "global_map_tile_" + kv.first + ".pcd";
+            kv.second->width = kv.second->points.size();
+            kv.second->height = 1;
+            // std::cout << "kv.second->is_dense: " << kv.second->is_dense << std::endl;
+            kv.second->is_dense = true ; //默认值
             pcl::io::savePCDFileBinary(filename, *kv.second);
             ROS_INFO("Saved tile %s (%zu points)", filename.c_str(), kv.second->points.size());
           }
@@ -1096,7 +1122,7 @@ int main(int argc, char **argv)
     std::string gnss_odoms_path =  work_dir + "/odoms";
     std::string pointclouds_path = work_dir + "/pointclouds";
     
-    std::string temp_file_dir = work_dir + "/temp_file/";
+    std::string temp_file_dir = work_dir + "/debug_file/";
     std::string output_g2o_file = temp_file_dir + "pose_graph.g2o";
     std::string opt_tum_file = temp_file_dir + "opt_tum_file.tum";
 
@@ -1119,14 +1145,10 @@ int main(int argc, char **argv)
     
     // Convert GNSS odom data to LiDAR poses using extrinsic calibration
     std::vector<TumPose> lidar_poses = GetLidarPoseOnWorld(gnss_odom_data, extrinsic);
-    // exit(0);
-
-    // Save LiDAR poses to TUM file for verification
-    std::string lidar_pose_file = work_dir + "/lidar_poses_from_gnss_odom.tum";
-    // savePoseVectorToTUM(lidar_poses, lidar_pose_file);
 
     // 新增：允许通过指定TUM文件直接读取相邻帧的位姿作为里程计约束，跳过GICP
-    std::string tum_odom_file = work_dir + "/temp_file/opt1.tum";
+    std::string tum_odom_file =  work_dir + "/debug_file/opt1.tum";
+
     // if (config["odom_tum_file"]) {
     //     tum_odom_file = config["odom_tum_file"].as<std::string>("");
     // }
@@ -1181,8 +1203,8 @@ int main(int argc, char **argv)
                                                    gicp_trans_std_z * gicp_trans_std_z).finished();
     auto gicpNoise = noiseModel::Diagonal::Variances(gicpVars);
 
-    if (!tum_odom_file.empty()) {
-    // if (0) {
+    // if (!tum_odom_file.empty()) {
+    if (0) {
         // 直接从TUM文件读取相邻帧的位姿，构建里程计约束
         std::cout << "[INFO] Using TUM file for odometry constraints: " << tum_odom_file << std::endl;
         std::vector<TumPose> tum_odoms = readTumPose(tum_odom_file );
@@ -1210,8 +1232,8 @@ int main(int argc, char **argv)
     } else {
         // ...existing code for GICP odometry constraints...
         std::vector<std::string> pcd_files = convertYamlPathsToPcdPaths(gnss_odom_files, pointclouds_path);
-        std::cout << "  pcd_files.size()  " <<  pcd_files.size() << std::endl;
-        std::cout << "  pcd_files.size()  " <<  pcd_files.back() << std::endl;
+        // std::cout << "  pcd_files.size()  " <<  pcd_files.size() << std::endl;
+        // std::cout << "  pcd_files.size()  " <<  pcd_files.back() << std::endl;
         int successful_gicp = 0;
         int failed_gicp = 0;
         for (size_t i = 0; i < pcd_files.size() - 1; ++i) {
@@ -1321,6 +1343,7 @@ int main(int argc, char **argv)
         }
         if( i % 100 == 0 )
         {
+            std::cerr << i << "th , pts, now map size: " << pts->size() <<  std::endl;
             std::cerr << i << "th , pts_to_world, now map size: " << global_map->size() <<  std::endl;
         }
         cloud_ptr pts_world(new pcl::PointCloud<pointtype>());
@@ -1328,7 +1351,7 @@ int main(int argc, char **argv)
         *global_map += *pts_world;
     }
     const auto tile_output_dir = temp_file_dir + "/grid_map/";
-    save_map_grid(tile_output_dir, global_map);
+    save_map_grid(tile_output_dir, global_map, utm_opt_pose);
 
     return 0;
 }

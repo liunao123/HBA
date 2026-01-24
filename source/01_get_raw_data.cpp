@@ -1,4 +1,3 @@
-
 #include <thread>
 #include <mutex>
 #include <condition_variable>
@@ -36,25 +35,6 @@
 struct LidarData {
   double timestamp;
 };
-
-
-struct PandarPointXYZIRT {
-    PCL_ADD_POINT4D;
-    // uint8_t intensity;
-    float intensity;
-    double timestamp;
-    uint16_t ring;
-    EIGEN_MAKE_ALIGNED_OPERATOR_NEW // make sure our new allocators are aligned
-} EIGEN_ALIGN16;
-POINT_CLOUD_REGISTER_POINT_STRUCT( PandarPointXYZIRT,
-        (float, x, x)
-        (float, y, y)
-        (float, z, z)
-        // (uint8_t, intensity, intensity)
-        (float, intensity, intensity)
-        (double, timestamp, timestamp)
-        (uint16_t, ring, ring)
-)
 
 // Local ENU converter using GeographicLib::LocalCartesian
 struct ENUConverter {
@@ -132,7 +112,8 @@ void write_odom_yaml( double timestamp, const Eigen::Vector3d& position,
     mkdir(odom_dir.c_str(), 0777);
   }
   std::ostringstream yaml_fn;
-  yaml_fn << odom_dir << std::fixed << std::setprecision(3) << timestamp << ".yaml";
+  static int id = 0;
+  yaml_fn << odom_dir << id++ << "_" << std::fixed << std::setprecision(3) << timestamp << ".yaml";
   std::cout << "[YAML] Writing: " << yaml_fn.str() << std::endl;
 
   YAML::Node node;
@@ -277,11 +258,12 @@ void save_pointcloud_to_pcd_with_undistort(const sensor_msgs::PointCloud2 &pc_ms
   {
     mkdir(dir.c_str(), 0777);
   }
+  static int id = 0;
   std::ostringstream oss;
-  oss << dir << std::fixed << std::setprecision(3) << timestamp << ".pcd";
+  oss << dir << id++ << "_" << std::fixed << std::setprecision(3) << timestamp << ".pcd";
   std::string filename = oss.str();
 
-    std::cerr << "to save [PCD] : " << std::endl;
+  // std::cerr << "to save [PCD] : " << std::endl;
 
   pcl::PointCloud<PandarPointXYZIRT> raw_cloud;
   pcl::fromROSMsg(pc_msg, raw_cloud);
@@ -340,13 +322,28 @@ int main(int argc, char **argv)
     std::cerr << "Failed to load config file: " << config_file << ", error: " << e.what() << std::endl;
     return 1;
   }
+  std::string work_dir = config["paths"]["work_dir"].as<std::string>("/mnt/nvme0n1p2/data/nongan_m2_1028/");
+  std::string temp_file_dir = work_dir + "/debug_file/";
+  std::string gnss_enu = temp_file_dir + "/lidar_at_enu.tum";
+  std::string utm_offset = temp_file_dir + "/utm_offset.yaml";
+ 
+  g_work_dir = work_dir;
 
-  // 获取work_dir路径
-  if (config["paths"] && config["paths"]["work_dir"]) {
-    g_work_dir = config["paths"]["work_dir"].as<std::string>();
-    // 去除末尾/
-    if (!g_work_dir.empty() && (g_work_dir.back() == '/' || g_work_dir.back() == '\\'))
-      g_work_dir.pop_back();
+  // Ensure work_dir exists
+  struct stat st;
+  if (stat(work_dir.c_str(), &st) != 0) {
+    if (mkdir(work_dir.c_str(), 0777) != 0) {
+        std::cerr << "Failed to create work_dir: " << work_dir << std::endl;
+        return 1;
+    }
+  }
+
+  // Ensure temp_file_dir exists
+  if (stat(temp_file_dir.c_str(), &st) != 0) {
+    if (mkdir(temp_file_dir.c_str(), 0777) != 0) {
+        std::cerr << "Failed to create temp_file_dir: " << temp_file_dir << std::endl;
+        return 1;
+    }
   }
 
   // 启动YAML对齐导出线程
@@ -375,12 +372,6 @@ int main(int argc, char **argv)
       t_extr.z() = extrinsic["translation"]["z"].as<double>(0.0);
     }
   }
-
-  std::string work_dir = config["paths"]["work_dir"].as<std::string>("/mnt/nvme0n1p2/data/nongan_m2_1028/");
-  std::string temp_file_dir = work_dir + "/temp_file/";
-  std::string gnss_enu = temp_file_dir + "/lidar_at_enu.tum";
-  std::string gnss_enu_original = temp_file_dir + "/lidar_at_enu_original.txt";
-
 
   if (bag_path.empty()) {
     std::cerr << "bag_path is required in config.yaml" << std::endl;
@@ -420,8 +411,15 @@ int main(int argc, char **argv)
       mkdir(temp_file_dir.c_str(), 0777);
     }
   }
-
+  int count_gnss = 0;
   for (const rosbag::MessageInstance &m : view) {
+    count_gnss++;
+    // if (count_gnss > 3000)
+    // {
+    //   break;
+    // }
+    std::cout << "Processing message #" << count_gnss << "\r" << std::flush;
+    
     if (m.getTopic() == gnss_topic) {
       auto msg = m.instantiate<chcnav::hcinspvatzcb>();
       if (!msg) continue;
@@ -448,7 +446,7 @@ int main(int argc, char **argv)
         gnss_queue.push_back(g);
         cv.notify_one();
       }
-      // ...已去除utm相关代码...
+
     } else if (m.getTopic() == lidar_topic) {
       sensor_msgs::PointCloud2::ConstPtr pc = m.instantiate<sensor_msgs::PointCloud2>();
       if (!pc) continue;
@@ -461,8 +459,7 @@ int main(int argc, char **argv)
         lidar_queue.push_back(l);
         cv.notify_one();
       }
-      // 点云数据暂存到全局map，后续筛选关键帧时再保存
-      // g_lidar_to_odom 只记录配对关系，点云数据可用ts->pc_msg的map缓存（如需优化）
+
     }
   }
 
@@ -540,9 +537,6 @@ int main(int argc, char **argv)
     return 1;
   }
   
-  // std::sort(enu_poses.begin(), enu_poses.end(), [](const TumPose&a, const TumPose&b){return a.timestamp < b.timestamp;});
-  // std::sort(lidar_times.begin(), lidar_times.end());
-
   // Save GNSS enu poses to TUM
   std::ofstream f(gnss_enu);
   if (!f.is_open())
@@ -559,33 +553,34 @@ int main(int argc, char **argv)
   f.close();
   ROS_INFO("Wrote %zu GNSS poses to %s", key_lidar_poses_at_enu.size(), gnss_enu.c_str());
 
-  // Write ENU origin (lat, lon, alt and ENU origin coordinates)
-  if (!gnss_enu_original.empty() && !key_lidar_poses_at_enu.empty()) {
-    std::ofstream fo(gnss_enu_original);
-    if (!fo.is_open()) {
-      ROS_WARN("Cannot open ENU origin file: %s", gnss_enu_original.c_str());
-    } else {
-      // The ENU origin is the first GNSS lat/lon/alt used by LocalCartesian
-      // We don't currently store the raw lat/lon in enu_poses, so re-open bag to fetch first GNSS
-      // Instead, we can use the ENUConverter's stored origin values if available
-      if (enu.initialized) {
-        fo << std::fixed << std::setprecision(8) << enu.lat0 << " " << enu.lon0 << " " << enu.h0 << "\n";
-        // fo << "ENU_origin_coords: 0.0 0.0 0.0\n";
-        // 投影到UTM坐标系下
-        double utm_x, utm_y;
-        int utm_zone = 0;
-        bool utm_northp = true;
-        GeographicLib::UTMUPS::Forward(enu.lat0, enu.lon0, utm_zone, utm_northp, utm_x, utm_y);
-        fo << std::setprecision(8) << "ENU_origin_UTM: " << utm_x << " " << utm_y << " " << enu.h0 << " zone:" << utm_zone << (utm_northp ? "N" : "S") << "\n";
-        fo.close();
-        ROS_INFO("Wrote ENU origin to %s (with UTM)", gnss_enu_original.c_str());
-      } else {
-        fo << "ENU origin not initialized \n";
-        fo.close();
-      }
-    }
+  // Write ENU origin (lat, lon, alt and ENU origin coordinates) in YAML format
+  YAML::Node node;
+  if (!utm_offset.empty() && enu.initialized)
+  {
+    node["lat"] = enu.lat0;
+    node["lon"] = enu.lon0;
+    node["alt"] = enu.h0;
+
+    double utm_x, utm_y;
+    int utm_zone = 0;
+    bool utm_northp = true;
+    GeographicLib::UTMUPS::Forward(enu.lat0, enu.lon0, utm_zone, utm_northp, utm_x, utm_y);
+
+    node["utm_offset"]["x"] = utm_x;
+    node["utm_offset"]["y"] = utm_y;
+    node["utm_offset"]["alt"] = enu.h0;
+    node["utm_offset"]["zone"] = utm_zone;
+    node["utm_offset"]["northp"] = utm_northp;
+
+    std::ofstream(utm_offset) << node;
+    ROS_INFO("Wrote ENU origin to %s (with UTM)", utm_offset.c_str());
   }
-  
+  else
+  {
+    node["error"] = "ENU origin not initialized ";
+    ROS_ERROR("Wrote ENU origin to %s (with UTM) Failed ...... ", utm_offset.c_str());
+    std::ofstream(utm_offset) << node;
+  }
   // 通知工作线程结束
   {
     std::lock_guard<std::mutex> lock(mtx);

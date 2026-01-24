@@ -1,34 +1,24 @@
 # 配置参数示例
-bag_path: /home/xf/Desktop/catkin_ws/data/1028_3.bag
+# bag_path: /home/xf/Desktop/catkin_ws/data/1028_3.bag
+bag_path: /media/xf/Elements/id4_1202/cam_all_2025-12-02-14-20-41_0.bag
 gnss_topic: /chcnav/devpvt
-lidar_topic: /lidar_points
-gnss_enu: gnss_enu.tum
-gnss_enu_original: gnss_enu_original.txt
-out_lidar_enu: out_lidar_enu.tum
-out_pcd_dir: ./pcd/
-gnss_utm: gnss_utm.tum
-gnss_utm_original: gnss_utm_original.txt
-
-
-# Configuration file for Pose3SLAMExample_g2o
-
-# Reference coordinates offset
-reference:
-  x: 662334.92633696645
-  y: 4873532.7935474264
-  z: 0.0
-
-# Advanced voxel filter parameters
-voxel_filter:
-  min_distance: 5.0        # Minimum distance for point cloud filtering (meters)
-  max_distance: 80.0        # Maximum distance for point cloud filtering (meters)
-  min_z: -2.50              # Minimum Z coordinate (meters)
-  max_z: 30.0               # Maximum Z coordinate (meters)
-  voxel_size: 0.1           # Voxel grid size for downsampling (meters)
+# lidar_topic: /lidar_points
+lidar_topic: /hesai/pandar_points 
 
 # File paths and working directory
 paths:
-  work_dir: "/home/xf/Desktop/catkin_ws/data/28_3_enu/new/"
+  work_dir: "/media/xf/Elements/id4_1202/raw_data/"
+
+# Configuration file for Pose3SLAMExample_g2o
+
+# Advanced voxel filter parameters
+voxel_filter:
+  min_distance: 3.0         # Minimum distance for point cloud filtering (meters)
+  max_distance: 80.0        # Maximum distance for point cloud filtering (meters)
+  min_z: -2.50              # Minimum Z coordinate (meters)
+  max_z: 30.0               # Maximum Z coordinate (meters)
+  voxel_size: 0.15           # Voxel grid size for downsampling (meters)
+
 
 # Optimization parameters
 optimization:
@@ -110,13 +100,24 @@ gicp_validation:
 # LiDAR to GNSS extrinsic calibration (T_gnss_lidar)
 # lidar 在 GNSS 坐标系下的 坐标
 # Transformation from GNSS frame to LiDAR frame
+# lidar_gnss_extrinsic:
+#   quaternion:
+#     x: 0.0
+#     y: 0.0
+#     z: 0.7071068
+#     w: 0.7071068
+#   translation:
+#     x: 0.06
+#     y: -0.02
+#     z: 0.25
+
 lidar_gnss_extrinsic:
   quaternion:
     x: 0.0
     y: 0.0
-    z: 0.7071068
-    w: 0.7071068
+    z: 1.0
+    w: 0.0
   translation:
-    x: 0.06
-    y: -0.02
-    z: 0.25
+    x: 0.0
+    y: 0.70
+    z: 1.2

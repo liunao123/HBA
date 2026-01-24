@@ -84,6 +84,14 @@ catkin_package(
   CATKIN_DEPENDS roscpp rospy std_msgs message_runtime
 )
 
+find_package(CURL REQUIRED)
+find_package(TIFF REQUIRED)
+# Ensure GDAL dependencies are resolved
+find_package(GDAL REQUIRED)
+# Add CURL, TIFF, and GDAL libraries to Pose3SLAMExample_g2o
+set(GDAL_LIBRARIES ${GDAL_LIBRARIES} ${CURL_LIBRARIES} ${TIFF_LIBRARIES})
+
+
 include_directories(
   include
   ${CATKIN_DEVEL_PREFIX}/include
@@ -130,15 +138,6 @@ target_link_libraries(01_get_raw_data
 )
 
 add_executable(02_Pose3SLAMExample_g2o source/02_Pose3SLAMExample_g2o.cpp)
-find_package(CURL REQUIRED)
-find_package(TIFF REQUIRED)
-
-# Ensure GDAL dependencies are resolved
-find_package(GDAL REQUIRED)
-
-# Add CURL, TIFF, and GDAL libraries to Pose3SLAMExample_g2o
-set(GDAL_LIBRARIES ${GDAL_LIBRARIES} ${CURL_LIBRARIES} ${TIFF_LIBRARIES})
-
 target_link_libraries(02_Pose3SLAMExample_g2o
   ${catkin_LIBRARIES} 
   ${PCL_LIBRARIES}  

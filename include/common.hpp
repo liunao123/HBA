@@ -7,6 +7,45 @@
 #include <Eigen/Dense>
 #include <yaml-cpp/yaml.h>
 
+// for taojian ot 128
+// struct PandarPointXYZIRT {
+//     PCL_ADD_POINT4D;
+//     // uint8_t intensity;
+//     float intensity;
+//     double timestamp;
+//     uint16_t ring;
+//     EIGEN_MAKE_ALIGNED_OPERATOR_NEW // make sure our new allocators are aligned
+// } EIGEN_ALIGN16;
+// POINT_CLOUD_REGISTER_POINT_STRUCT( PandarPointXYZIRT,
+//         (float, x, x)
+//         (float, y, y)
+//         (float, z, z)
+//         // (uint8_t, intensity, intensity)
+//         (float, intensity, intensity)
+//         (double, timestamp, timestamp)
+//         (uint16_t, ring, ring)
+// )
+
+// for id4
+struct PandarPointXYZIRT {
+    PCL_ADD_POINT4D;
+    uint8_t intensity;
+    // float intensity;
+    double timestamp;
+    uint16_t ring;
+    EIGEN_MAKE_ALIGNED_OPERATOR_NEW // make sure our new allocators are aligned
+} EIGEN_ALIGN16;
+POINT_CLOUD_REGISTER_POINT_STRUCT( PandarPointXYZIRT,
+        (float, x, x)
+        (float, y, y)
+        (float, z, z)
+        (uint8_t, intensity, intensity)
+        // (float, intensity, intensity)
+        (double, timestamp, timestamp)
+        (uint16_t, ring, ring)
+)
+
+
 // Use TumPose for both GNSS and LIO-style poses. Fields:
 //   - q: orientation
 //   - t: position (UTM meters)
@@ -19,11 +58,6 @@ struct TumPose
     Eigen::Vector3d t;
     double timestamp;
 };
-
-// Global configuration variables (loaded from YAML)
-extern float ref_x;
-extern float ref_y;
-extern float ref_z;
 
 // Voxel filter parameters
 extern float g_min_distance;
@@ -254,11 +288,6 @@ inline void loadConfigFromYAML(const std::string& config_file,
         std::cerr << "Using default parameters" << std::endl;
         config = YAML::Node();
     }
-
-    // Load reference coordinates
-    ref_x = config["reference"]["x"].as<float>(662334.92633696645);
-    ref_y = config["reference"]["y"].as<float>(4873532.7935474264);
-    ref_z = config["reference"]["z"].as<float>(0.0);
 
     // Load voxel filter parameters
     g_min_distance = config["voxel_filter"]["min_distance"].as<float>(2.50);
