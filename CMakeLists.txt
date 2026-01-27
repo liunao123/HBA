@@ -210,3 +210,19 @@ target_link_libraries(visualize_with_pose_pcd ${catkin_LIBRARIES} ${PCL_LIBRARIE
 # add_executable(odom2posegraph_keyframe source/odom2posegraph_keyframe.cpp)
 # target_link_libraries(odom2posegraph_keyframe ${catkin_LIBRARIES}  ${PCL_LIBRARIES} )
 
+# Add executable for testing SensorExtrinsics
+add_executable(test_sensor_extrinsics source/sensor_extrinsics.cpp)
+target_link_libraries(test_sensor_extrinsics
+  ${catkin_LIBRARIES}
+  Eigen3::Eigen
+  yaml-cpp
+)
+
+# Ensure the include directories are added
+include_directories(
+  include
+  ${catkin_INCLUDE_DIRS}
+  ${EIGEN3_INCLUDE_DIR}
+  ${YAML_CPP_INCLUDE_DIRS}
+)
+

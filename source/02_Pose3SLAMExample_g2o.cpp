@@ -41,6 +41,7 @@
 #include <pcl/common/common.h>
 #include <pcl/filters/radius_outlier_removal.h>
 #include <pcl/filters/crop_box.h>
+#include <yaml-cpp/yaml.h>
 
 // Use nano_gicp instead of PCL GICP
 #include <nano_gicp/nano_gicp.h>
@@ -87,20 +88,27 @@ std::vector<TumPose> to_utm_pose(const std::vector<TumPose> &opt_enu_poses, cons
         std::cerr << "to_utm_pose: empty opt_enu_poses, nothing to do" << std::endl;
     }
 
-    // 读取 ENU 原点经纬高：bag_gnss_to_tum 写在 temp_file_dir + "lidar_at_enu_original.txt"
-    std::string origin_file = temp_file_dir + "lidar_at_enu_original.txt";
-    std::ifstream fin(origin_file);
-    if (!fin.is_open())
-    {
-        std::cerr << "to_utm_pose: cannot open ENU origin file: " << origin_file << std::endl;
-    }
- 
-    double lat0 = 43.99715149 , lon0 = 125.02480834, h0 = 201.48359680;
-    fin >> lat0 >> lon0 >> h0;
-    if (!fin.good())
-    {
-        std::cerr << "to_utm_pose: failed to read ENU origin (lat lon h) from: " << origin_file << std::endl;
-    }
+    // nongan
+    // double lat0 = 43.99715149 , lon0 = 125.02480834, h0 = 201.48359680;
+
+    // park
+    // double lat0 = 31.426656703623681 , lon0 = 120.61981934083687, h0 = 13.115289688110352;
+
+    std::string offset_file = temp_file_dir + "/utm_offset.yaml";
+    std::cerr << "offset_file: " << offset_file << std::endl;
+
+    // 1. 加载YAML文件（请替换为你的yaml文件实际路径）
+    YAML::Node config = YAML::LoadFile(offset_file);
+
+    // 3. 读取基础地理信息
+    const double lat0 = config["lat"].as<double>();
+    const double lon0 = config["lon"].as<double>();
+    const double h0 = config["alt"].as<double>();
+
+    // 4. 读取UTM偏移量（嵌套节点）
+    YAML::Node utm_node = config["utm_offset"];
+    const double utm_x0 = utm_node["x"].as<double>();
+    const double utm_y0 = utm_node["y"].as<double>();
 
     std::cout << "to_utm_pose: ENU origin lat0=" << std::setprecision(8) << lat0
               << " lon0=" << lon0 << " h0=" << h0 << std::endl;
@@ -122,18 +130,14 @@ std::vector<TumPose> to_utm_pose(const std::vector<TumPose> &opt_enu_poses, cons
         // ENU -> 经纬高
         double lat, lon, h;
         local_cart.Reverse(p_enu.t.x(), p_enu.t.y(), p_enu.t.z(), lat, lon, h);
-        std::cerr << "124 lat, lon " << lat << ", " << lon << std::endl;
+        // std::cerr << "124 lat, lon " << lat << ", " << lon << std::endl;
 
         // 经纬度 -> UTM
         int zone;
         bool northp;
         double utm_x, utm_y;
         GeographicLib::UTMUPS::Forward(lat, lon, zone, northp, utm_x, utm_y);
-        std::cerr << "131 utm_x " << utm_x << ", " << utm_y << std::endl;
-        
-        double utm_x0 = 662346.21199479;
-        double utm_y0 = 4873549.49830244;
-        double h0 = 201.48359680;
+        // std::cerr << "131 utm_x " << utm_x << ", " << utm_y << std::endl;
         
         Eigen::Vector3d utm_t (utm_x - utm_x0, utm_y - utm_y0, h - h0);
 
@@ -162,9 +166,9 @@ std::vector<TumPose> to_utm_pose(const std::vector<TumPose> &opt_enu_poses, cons
 
             Eigen::Quaterniond q_utm(R_utm);
             // ! ENU坐标转UTM坐标（只旋转，不平移）
-            // ! todo :
+            // ! todo 原始的位置就是 lidar在utm下的位置
             // Eigen::Vector3d t_utm = rot_z * (utm_t - opt_enu_poses[0].t) ;
-            Eigen::Vector3d t_utm = utm_t ; // + opt_enu_poses[0].t ;
+            Eigen::Vector3d t_utm = utm_t; // + opt_enu_poses[0].t ;
 
             TumPose p_utm;
             p_utm.timestamp = p_enu.timestamp;
@@ -475,7 +479,7 @@ cloud_ptr loadPCDForIdTimestamp(const std::string &pcd_dir, uint64_t id, double 
     // ss << std::fixed << std::setprecision(3) << timestamp << ".pcd";
     ss << id << "_" << std::fixed << std::setprecision(3) << timestamp << ".pcd";
     std::string filename = ss.str();
-    std::cout << "pcd filename: " << filename <<  std::endl;
+    // std::cout << "pcd filename: " << filename <<  std::endl;
 
     cloud_ptr cloud(new pcl::PointCloud<pointtype>());
     cloud = getCachedPointCloud(filename);
@@ -705,17 +709,15 @@ void addLoopToGraph(NonlinearFactorGraph &graph,
     std::sort(keys.begin(), keys.end());
 
     const int step = loop_config.step;
-    int max_loop_index = keys.size() - step;
+    int max_loop_index = loop_config.end_index - step;
 
-    if ( loop_config.end_index > keys.size() )
+    if ( loop_config.end_index >= keys.size() )
     {
-        ROS_ERROR("addLoopToGraph: invalid loop_config start_index or end_index");
+        ROS_WARN("addLoopToGraph: invalid loop_config start_index or end_index");
+        max_loop_index = keys.size() - step ;
         // exit(-1);
     }
-    else
-    {
-        max_loop_index = loop_config.end_index ;
-    }
+    ROS_INFO("addLoopToGraph:  end_index=%d", max_loop_index);
 
     // for (size_t i = 0; i < keys.size()  ; i = i + step)
     for (size_t i = loop_config.start_index; i < max_loop_index ; i = i + step)
@@ -732,8 +734,7 @@ void addLoopToGraph(NonlinearFactorGraph &graph,
         auto cloud_i = loadPCDForIdTimestamp(pcd_dir, ki, ti);
         if ( !cloud_i ) continue;
 
-        for (size_t j = keys.size() ; j >  step ; j = j - step)
-        // for (size_t j = loop_config.end_index ; j >  loop_config.start_index ; j = j - step)
+        for (size_t j = max_loop_index; j >  step ; j = j - step)
         {   // skip adjacent (i+1)
             Key kj = keys[j];
             if (!initial.exists<Pose3>(kj))
@@ -797,6 +798,8 @@ void addLoopToGraph(NonlinearFactorGraph &graph,
                 var_rot = loop_config.var_rot;    // 从配置读取
                 std::cout << "✅ High quality loop (fitness=" << fitness << ") - Strong constraint" << std::endl;
             } else {
+                // var_trans = 2 * loop_config.var_trans;   // 从配置读取
+                // var_rot = 2 * loop_config.var_rot;    // 从配置读取
                 // 一般匹配: 中等约束，基于fitness动态调整
                 var_trans = std::max(2.0, fitness );  
                 var_rot = std::max(0.1, fitness * 0.1);
@@ -857,136 +860,6 @@ bool readLoopClosuresFromG2O(const std::string& filename, NonlinearFactorGraph& 
 }
 
 
-
-/**
- * @brief 将ENU坐标系下优化后的结果转换到UTM坐标系，姿态转换时考虑子午线收敛角
- * @param optimized_poses 优化后的ENU坐标系位姿（gtsam::Values）
- * @param original_odom_poses 原始odom位姿向量（包含经纬度信息）
- * @param output_file 输出文件路径
- * @param timestamps 时间戳映射（可选）
- * @return 转换是否成功
- * 
- * 原理说明：
- * 1. ENU坐标系是局部东北天坐标系，以某个参考点为原点
- * 2. UTM坐标系是投影坐标系，需要加上参考点的UTM坐标
- * 3. 子午线收敛角(gamma)：真北方向与UTM网格北方向的夹角
- *    - 在中央子午线上为0，远离中央子午线时增大
- *    - 姿态需要绕Z轴旋转gamma角度才能从ENU转到UTM
- * 4. 从原始odom中提取经纬度，计算对应的UTM坐标和子午线收敛角
- */
-bool convertENUToUTMWithMeridianConvergence(
-    const gtsam::Values &optimized_poses,
-    const std::vector<TumPose> &opt_enu_poses,
-    const std::string &output_file, 
-    const std::vector<GnssOdomData> &gnss_odom_data  )
-{
-    if (optimized_poses.empty() || opt_enu_poses.empty())
-    {
-        std::cerr << "Error: Empty input data" << std::endl;
-        return false;
-    }
-    std::cout << "opt_enu_poses.size:   " << opt_enu_poses.size() << " optimized poses to convert." << std::endl;
-    std::cout << "gnss_odom_data.size:   " << gnss_odom_data.size() << " optimized poses to convert." << std::endl;
-
-    std::cout << "\n========== Converting ENU to UTM with Meridian Convergence ==========" << std::endl;
-    
-    // 假设原始odom的twist中存储了经纬度信息
-    // 或者从配置中读取参考点经纬度
-    // 这里使用第一个odom位姿对应的经纬度作为参考
-    
-    // 假设我们需要计算子午线收敛角
-    // 对于中国地区，通常使用6度分带或3度分带
-    // 子午线收敛角计算公式: gamma = (lon - lon0) * sin(lat)
-    // 其中 lon0 是中央子午线经度
-    
-    // 这里需要从原始数据中获取经纬度信息
-    // 假设经纬度信息存储在某个地方，或者通过UTM反算得到
-    // 示例：假设参考点纬度为44度（弧度）
-    double ref_latitude_rad = 43.99715149 * M_PI / 180.0;  // 约44度，需要从实际数据获取
-    double ref_longitude_rad = 125.02480834 * M_PI / 180.0; // 约118度，需要从实际数据获取
-     
-    // 计算UTM分带和中央子午线
-    // UTM 6度分带：zone = floor((lon_deg + 180) / 6) + 1
-    // 中央子午线: lon0 = (zone - 1) * 6 - 180 + 3
-    double lon_deg = ref_longitude_rad * 180.0 / M_PI;
-    int utm_zone = static_cast<int>(std::floor((lon_deg + 180.0) / 6.0)) + 1;
-    double central_meridian_deg = (utm_zone - 1) * 6.0 - 180.0 + 3.0;
-    double central_meridian_rad = central_meridian_deg * M_PI / 180.0;
-    
-    // ========== 新增：优化pose转到UTM坐标系并写TUM文件 ==========
-    // opt_enu_poses: 优化后的ENU pose和时间戳
-    // gnss_odom_data: 原始GNSS数据，含经纬度
-    // 输出文件路径
-    std::ofstream fout(output_file);
-    if (!fout.is_open()) {
-        std::cerr << "Cannot open output file: " << output_file << std::endl;
-    } else {
-        for (size_t i = 0; i < opt_enu_poses.size() && i < gnss_odom_data.size(); ++i) {
-            const TumPose &pose = opt_enu_poses[i];
-            const GnssOdomData &gnss = gnss_odom_data[i];
-            if (gnss.timestamp != pose.timestamp) {
-                std::cerr << "Timestamp mismatch at index " << i << ": gnss " << gnss.timestamp 
-                          << " vs pose " << pose.timestamp << std::endl;
-                continue;
-            }
-            // 经纬度
-            double lat = gnss.position_lla.x();
-            double lon = gnss.position_lla.y();
-            double alt = gnss.position_lla.z();
-            // 计算子午线收敛角
-            bool utm_northp = true;
-            double utm_x, utm_y;
-            std:cout << " lat lon alt: " << lat << " , " << lon << " , " << alt << std::endl;
-            
-            int utm_zone = static_cast<int>(std::floor((lon + 180.0) / 6.0)) + 1;
-            int zone = 0;
-
-            if (lon < 0) {
-              zone = static_cast<int>((180. - lon) / 6.0) + 1; // 西经
-            } else {
-              zone = static_cast<int>(lon / 6.0) + 31; // 东经
-            }
-            std::cout << "zone: " << zone << std::endl;
-            std::cout << "utm_zone: " << utm_zone << std::endl;
-
-            double lambda0 = utm_zone * 6.0 - 183.0; // UTM中央经线
-            double delta_lambda = (lon - lambda0) * M_PI / 180.0;
-            double phi = lat * M_PI / 180.0;
-            // double gamma = std::atan(std::tan(delta_lambda) * std::sin(phi)); // 子午线收敛角，单位：弧度
-            // Eigen::AngleAxisd rot_z(gamma, Eigen::Vector3d::UnitZ());
-
-            double gamma = (delta_lambda) * std::sin(phi);
-            double cos_gamma = std::cos(gamma);
-            double sin_gamma = std::sin(gamma);
-            
-            Eigen::Matrix3d rot_z;
-            rot_z << cos_gamma, -sin_gamma, 0,
-                     sin_gamma,  cos_gamma, 0,
-                     0,          0,         1;
-
-            // pose转到UTM坐标系下
-            Eigen::Matrix3d R_enu = pose.q.toRotationMatrix();
-            Eigen::Matrix3d R_utm = rot_z * R_enu;
-            Eigen::Quaterniond q_utm(R_utm);
-            // ENU坐标转UTM坐标（只旋转，不平移）
-            Eigen::Vector3d t_utm = rot_z * pose.t ; // + opt_enu_poses[0].t ;
-
-            // 写入TUM文件：timestamp utm_x utm_y alt qx qy qz qw
-            fout << std::fixed << std::setprecision(3) << pose.timestamp << " "
-                 << std::setprecision(6) << t_utm.x() << " " << t_utm.y() << " " << t_utm.z() << " "
-                //  << std::setprecision(6) << pose.t.x() << " " << pose.t.y() << " " << pose.t.z() << " "
-                 << q_utm.x() << " " << q_utm.y() << " " << q_utm.z() << " " << q_utm.w() << "\n";
-        }
-        fout.close();
-        std::cout << "Saved optimized UTM poses to: " << output_file << std::endl;
-    }
-    
-    std::cout << "Output saved to: " << output_file << std::endl;
-    std::cout << "=========================================================================\n" << std::endl;
-    return true;
-}
-
-
 void pts_to_world(const cloud_ptr &pts_local,
                         cloud_ptr &pts_world,
                         const TumPose &pose )
@@ -1012,7 +885,6 @@ void pts_to_world(const cloud_ptr &pts_local,
     Eigen::Matrix4f key_pose = Eigen::Matrix4f::Identity();
     key_pose.block<3, 3>(0, 0) = pose.q.toRotationMatrix().cast<float>();
     key_pose.block<3, 1>(0, 3) = pose.t.cast<float>();
-    std::cout << "pts_to_world: key_pose:\n" << key_pose << std::endl;
 
     try
     {
@@ -1050,7 +922,7 @@ void save_map_grid(std::string tile_output_dir, const cloud_ptr &transformedClou
         if (tile_dir_ready)
         {
           std::unordered_map<std::string, pcl::PointCloud<pcl::PointXYZI>::Ptr> tile_clouds;
-          const double tile_size = 200.0;
+          const double tile_size = 100.0;
           
           // Ensure tile_x and tile_y are positive and start from 0 using PCL's library
           pcl::PointCloud<pcl::PointXYZ> cloud;
@@ -1173,7 +1045,7 @@ int main(int argc, char **argv)
         Key key = static_cast<Key>(i);
         initial.insert(key, curr);
         // Add prior for first pose
-        if (i == 0 ) {
+        if (i == 0) {
         // if (i == 0 or i == lidar_poses.size()-1 ) {
             gtsam::Vector priorVars = (gtsam::Vector(6) << 1e4, 1e4, 1e4, 1e-6, 1e-6, 1e-6).finished();
             auto priorNoise = noiseModel::Diagonal::Variances(priorVars);
@@ -1182,7 +1054,7 @@ int main(int argc, char **argv)
         }
         // Add prior factor every 100 poses
         // else {
-        else if (i % 100 == 0) {
+        else if (i % 50 == 0) {
             gtsam::Vector priorVars100 = (gtsam::Vector(6) << 1e4, 1e4, 1e4, 4e-4, 4e-4, 9e-4).finished();
             auto priorNoise100 = noiseModel::Diagonal::Variances(priorVars100);
             graph.add(PriorFactor<Pose3>(key, curr, priorNoise100));
@@ -1280,7 +1152,7 @@ int main(int argc, char **argv)
         std::cout << "==========================================\n" << std::endl;
     }
     
-    addLoopToGraph(graph, initial, key_frame_timestamps , pointclouds_path, loop_config);
+    // addLoopToGraph(graph, initial, key_frame_timestamps , pointclouds_path, loop_config);
 
     // exit (0);
  
@@ -1341,7 +1213,7 @@ int main(int argc, char **argv)
             ROS_WARN("Skip frame %d: empty/null point cloud", i);
             continue;
         }
-        if( i % 100 == 0 )
+        if( i % 500 == 0 )
         {
             std::cerr << i << "th , pts, now map size: " << pts->size() <<  std::endl;
             std::cerr << i << "th , pts_to_world, now map size: " << global_map->size() <<  std::endl;
