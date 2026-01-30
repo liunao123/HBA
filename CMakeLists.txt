@@ -151,6 +151,9 @@ target_link_libraries(02_Pose3SLAMExample_g2o
 )
 
 
+add_executable(pub_pose_and_pts source/pub_pose_and_pts.cpp)
+target_link_libraries(pub_pose_and_pts ${catkin_LIBRARIES} ${PCL_LIBRARIES})
+
 add_executable(visualize_with_pose_pcd source/visualize_with_pose_pcd.cpp)
 target_link_libraries(visualize_with_pose_pcd ${catkin_LIBRARIES} ${PCL_LIBRARIES})
 

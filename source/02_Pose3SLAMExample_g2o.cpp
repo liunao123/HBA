@@ -115,7 +115,7 @@ std::vector<TumPose> to_utm_pose(const std::vector<TumPose> &opt_enu_poses, cons
 
     GeographicLib::LocalCartesian local_cart(lat0, lon0, h0);
 
-    std::string out_file = temp_file_dir + "optimized_utm_from_enu.tum";
+    std::string out_file = temp_file_dir + "opt_pose_utm.tum";
     std::ofstream fout(out_file);
     if (!fout.is_open())
     {
@@ -243,16 +243,16 @@ void applyAdvancedVoxelFilter(const pcl::PointCloud<pointtype> &input_cloud,
 cloud_ptr getCachedPointCloud(std::string pcd_filename)
 {
     // 检查缓存中是否已经有这个文件
-    {
-        std::lock_guard<std::mutex> lock(cacheMutex);
-        auto it = pointCloudCache.find(pcd_filename);
-        if (it != pointCloudCache.end() && it->second)
-        {
-            // std::cout << "Using cached point cloud: " << pcd_filename 
-            //           << " (" << it->second->size() << " points)" << std::endl;
-            return it->second;
-        }
-    }
+    // {
+    //     std::lock_guard<std::mutex> lock(cacheMutex);
+    //     auto it = pointCloudCache.find(pcd_filename);
+    //     if (it != pointCloudCache.end() && it->second)
+    //     {
+    //         // std::cout << "Using cached point cloud: " << pcd_filename 
+    //         //           << " (" << it->second->size() << " points)" << std::endl;
+    //         return it->second;
+    //     }
+    // }
 
     // 缓存中没有，需要加载
     cloud_ptr raw_cloud(new pcl::PointCloud<pointtype>());
@@ -269,6 +269,10 @@ cloud_ptr getCachedPointCloud(std::string pcd_filename)
         for (const auto &p : raw_cloud->points)
         {
             if ( std::abs(p.x) < crop_near_range &&  std::abs(p.y) < crop_near_range)
+            {
+                continue;
+            }
+            if ( std::abs(p.x) > 100.0 || std::abs(p.y) > 100.0)
             {
                 continue;
             }
@@ -299,69 +303,12 @@ cloud_ptr getCachedPointCloud(std::string pcd_filename)
     cropped->is_dense = raw_cloud->is_dense;
 
     // 存入缓存
-    std::lock_guard<std::mutex> lock(cacheMutex);
-    pointCloudCache[pcd_filename] = cropped;
+    // std::lock_guard<std::mutex> lock(cacheMutex);
+    // pointCloudCache[pcd_filename] = cropped;
     return cropped;
 }
 
-// Function to read timestamps from TUM file
-std::vector<TumPose> readTumPose(const string &tumFile)
-{
-    std::vector<TumPose> pose_vec;
-    ifstream file(tumFile);
-    if (!file.is_open())
-    {
-        cerr << "Warning: Cannot open TUM file for timestamps: " << tumFile << endl;
-        return pose_vec;
-    }
-    cout << "Reading timestamps from TUM file: " << tumFile << endl;
-    string line;
-    while (getline(file, line))
-    {
-        // Skip comments and empty lines
-        if (line.empty() || line[0] == '#')
-        {
-            continue;
-        }
 
-        istringstream iss(line);
-        double timestamp, tx, ty, tz, qx, qy, qz, qw;
-
-        if (iss >> timestamp >> tx >> ty >> tz >> qx >> qy >> qz >> qw)
-        {
-            Eigen::Quaterniond q(qw, qx, qy, qz);
-            Eigen::Vector3d t(tx, ty, tz);
-
-            TumPose tmp;
-            tmp.timestamp = timestamp; // - 1718660000.0;
-            tmp.q = q;
-            tmp.t = t;
-            pose_vec.push_back( tmp );
-            // std::cout << std::to_string(timestamp) << " " << (pose_vec.back().t - pose_vec[0].t).transpose() << " " << q.x() << " " << q.y() << " " << q.z() << " " << q.w() << std::endl;
-        }
-    }
-
-    file.close();
-    cout << "Read " << pose_vec.size() << " pose from TUM file" << endl;
-    
-    // Apply offset: subtract the first pose XYZ from all poses
-    if (!pose_vec.empty())
-    {
-        Eigen::Vector3d t_first = pose_vec[0].t;
-        
-        cout << "Applying XYZ offset - First pose position: t=[" << t_first.transpose() << "]" << endl;
-        
-        for (size_t i = 0; i < pose_vec.size(); ++i)
-        {
-            // Only subtract the translation, keep rotation unchanged
-            pose_vec[i].t = pose_vec[i].t - t_first;
-        }
-        
-        cout << "XYZ offset applied. First pose position is now at origin." << endl;
-    }
-    
-    return pose_vec;
-}
 
 // Function to save trajectory in TUM format with optional timestamps
 std::vector<TumPose>  saveTUMTrajectory(const Values &values, const string &filename, const map<Key, double> &timestamps = map<Key, double>() )
@@ -996,7 +943,7 @@ int main(int argc, char **argv)
     
     std::string temp_file_dir = work_dir + "/debug_file/";
     std::string output_g2o_file = temp_file_dir + "pose_graph.g2o";
-    std::string opt_tum_file = temp_file_dir + "opt_tum_file.tum";
+    std::string opt_tum_file = temp_file_dir + "opt_pose_enu.tum";
 
     std::vector<std::string> gnss_odom_files = getFilesWithExtension(gnss_odoms_path, ".yaml");
     
@@ -1075,8 +1022,8 @@ int main(int argc, char **argv)
                                                    gicp_trans_std_z * gicp_trans_std_z).finished();
     auto gicpNoise = noiseModel::Diagonal::Variances(gicpVars);
 
-    // if (!tum_odom_file.empty()) {
-    if (0) {
+    if (!tum_odom_file.empty()) {
+    // if (0) {
         // 直接从TUM文件读取相邻帧的位姿，构建里程计约束
         std::cout << "[INFO] Using TUM file for odometry constraints: " << tum_odom_file << std::endl;
         std::vector<TumPose> tum_odoms = readTumPose(tum_odom_file );
@@ -1152,7 +1099,7 @@ int main(int argc, char **argv)
         std::cout << "==========================================\n" << std::endl;
     }
     
-    // addLoopToGraph(graph, initial, key_frame_timestamps , pointclouds_path, loop_config);
+    addLoopToGraph(graph, initial, key_frame_timestamps , pointclouds_path, loop_config);
 
     // exit (0);
  

@@ -119,6 +119,66 @@ struct GnssOdomData
     double speed;                    // speed magnitude
 };
 
+
+// Function to read timestamps from TUM file
+std::vector<TumPose> readTumPose(const std::string &tumFile)
+{
+    std::vector<TumPose> pose_vec;
+    std::ifstream file(tumFile);
+    if (!file.is_open())
+    {
+        std::cerr << "Warning: Cannot open TUM file for timestamps: " << tumFile << std::endl;
+        return pose_vec;
+    }
+    std::cout << "Reading timestamps from TUM file: " << tumFile << std::endl;
+    std::string line;
+    while (getline(file, line))
+    {
+        // Skip comments and empty lines
+        if (line.empty() || line[0] == '#')
+        {
+            continue;
+        }
+
+        std::istringstream iss(line);
+        double timestamp, tx, ty, tz, qx, qy, qz, qw;
+
+        if (iss >> timestamp >> tx >> ty >> tz >> qx >> qy >> qz >> qw)
+        {
+            Eigen::Quaterniond q(qw, qx, qy, qz);
+            Eigen::Vector3d t(tx, ty, tz);
+
+            TumPose tmp;
+            tmp.timestamp = timestamp; // - 1718660000.0;
+            tmp.q = q;
+            tmp.t = t;
+            pose_vec.push_back( tmp );
+            // std::cout << std::to_string(timestamp) << " " << (pose_vec.back().t - pose_vec[0].t).transpose() << " " << q.x() << " " << q.y() << " " << q.z() << " " << q.w() << std::endl;
+        }
+    }
+
+    file.close();
+    // std::cout << "Read " << pose_vec.size() << " pose from TUM file" << std::endl;
+    
+    // // Apply offset: subtract the first pose XYZ from all poses
+    // if (!pose_vec.empty())
+    // {
+    //     Eigen::Vector3d t_first = pose_vec[0].t;
+        
+    //     std::cout << "Applying XYZ offset - First pose position: t=[" << t_first.transpose() << "]" << std::endl;
+        
+    //     for (size_t i = 0; i < pose_vec.size(); ++i)
+    //     {
+    //         // Only subtract the translation, keep rotation unchanged
+    //         pose_vec[i].t = pose_vec[i].t - t_first;
+    //     }
+        
+    //     cout << "XYZ offset applied. First pose position is now at origin." << endl;
+    // }
+    
+    return pose_vec;
+}
+
 // Read a single GNSS odom YAML file
 inline GnssOdomData readGnssOdomYaml(const std::string& yaml_file)
 {

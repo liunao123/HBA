@@ -1,6 +1,6 @@
 # 配置参数示例
 # bag_path: /home/xf/Desktop/catkin_ws/data/1028_3.bag
-bag_path: /media/xf/Elements/id4_1202/park.bag
+bag_path: /media/xf/Elements/id4_1202/bag1/20251220_3.bag
 gnss_topic: /chcnav/devpvt
 # lidar_topic: /lidar_points
 lidar_topic: /hesai/pandar_points 
@@ -8,7 +8,7 @@ lidar_topic: /hesai/pandar_points
 # File paths and working directory
 paths:
   # work_dir: "/home/xf/Desktop/catkin_ws/data/test_id4/"
-  work_dir: "/media/xf/Elements/id4_1202/raw_data/"
+  work_dir: "/media/xf/Elements/id4_1202/raw_data_3/"
 
 # Configuration file for Pose3SLAMExample_g2o
 
@@ -54,8 +54,8 @@ noise:
 
 # Loop closure parameters
 loop_closure:
-  time_thresh: 10.0             # Time threshold for loop detection (seconds)
-  spatial_thresh: 10.0          # Spatial distance threshold (meters)
+  time_thresh: 50.0             # Time threshold for loop detection (seconds)
+  spatial_thresh: 5.0          # Spatial distance threshold (meters)
   fitness_thresh: 1.0           # GICP fitness score threshold
   max_fitness_reject: 200.0      # Reject loop if fitness > this value
   voxel_size: 0.1               # Voxel size for loop closure
@@ -71,7 +71,7 @@ loop_closure:
   search:
     start_index: 0              # Start index for loop search
     end_index: 20000             # End index for loop search
-    step: 3                     # Step size for loop search
+    step: 10                     # Step size for loop search
     min_key_diff: 20            # Minimum key difference to consider
   
   # Loop file saving/loading
