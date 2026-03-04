@@ -626,7 +626,7 @@ bool runGICPGetRelative(const cloud_ptr &target,
     // ROS_INFO("GICP converged fitness=%f", out_fitness);
     
     static int cnt = 0;
-    std::string savePCDDirectory = "/home/xf/Desktop/catkin_ws/loop_closure/";
+    std::string savePCDDirectory = "./loop_closure/";
     mkdir((savePCDDirectory).c_str(), 0777);
     if (cnt % 50 == 0)
     {
@@ -966,7 +966,7 @@ int main(int argc, char **argv)
     std::vector<TumPose> lidar_poses = GetLidarPoseOnWorld(gnss_odom_data, extrinsic);
 
     // 新增：允许通过指定TUM文件直接读取相邻帧的位姿作为里程计约束，跳过GICP
-    std::string tum_odom_file =  work_dir + "/debug_file/opt1.tum";
+    std::string tum_odom_file =  work_dir + "/debug_file/opt_pose_enu1.tum";
 
     // if (config["odom_tum_file"]) {
     //     tum_odom_file = config["odom_tum_file"].as<std::string>("");

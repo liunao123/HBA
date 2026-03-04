@@ -224,7 +224,7 @@ int main(int argc, char** argv)
   // ros::Duration(2).sleep();
   pcl::PointCloud<pointtype> global_map;
 
-  double range = 50.0;
+  // double range = 50.0;
 
   i = pcd_start_index;
 
@@ -265,7 +265,13 @@ int main(int argc, char** argv)
     // pc_surf_pandar->points.clear();
     
     std::ostringstream oss;
-    oss << std::fixed << std::setprecision(3) << st_pose[i];
+    
+    // time.pcd
+    // oss << std::fixed << std::setprecision(3) << st_pose[i];
+
+    // id_time.pcd
+    oss << i << "_" << std::fixed << std::setprecision(3) << st_pose[i];
+
     // std::string pcd_st = pcd_path + oss.str() + "_surf.pcd";
     std::string pcd_st = pcd_path + oss.str() + ".pcd";
     // std::string pcd_st = pcd_path + std::to_string( int(st_pose[i])) + ".pcd";
@@ -297,7 +303,7 @@ int main(int argc, char** argv)
     }
 
     key_pose.block<3, 1>(0, 3) = pose_vec[i].t;
-    std::cout << i << "  key_pose: " << key_pose << std::endl;
+    // std::cout << i << "  key_pose: " << key_pose << std::endl;
 
     pcl::PointCloud<pointtype>::Ptr global_pts(new pcl::PointCloud<pointtype>);
     
@@ -308,8 +314,6 @@ int main(int argc, char** argv)
         ROS_ERROR("Exception during point cloud transformation at frame %zu: %s", i, e.what());
         continue;
     }
-    // std::cout << i << "  275 qt: " << key_pose << std::endl;
-    // std::cout << "qt: " << pose_vec[i].t.transpose()  << std::endl;
  
     if(save_global_map)
     {

@@ -11,7 +11,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -pthread -std=c++0x -std=c++17 -fexceptions")
 SET(CMAKE_RUNTIME_OUTPUT_DIRECTORY ../bin)
-set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++17 -ltbb -pthread -std=c++1z -std=c++17 -fexceptions")
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++17 -pthread -std=c++1z -std=c++17 -fexceptions")
 
 find_package(catkin REQUIRED COMPONENTS
   roscpp
@@ -44,8 +44,13 @@ find_package(OpenCV REQUIRED)
 # if (EXISTS "/usr/lib/x86_64-linux-gnu/cmake/pcl/PCLConfig.cmake")
 #   set(PCL_DIR "/usr/lib/x86_64-linux-gnu/cmake/pcl" CACHE PATH "PCL CMake config directory" FORCE)
 # endif()
-# find_package(PCL 1.15 REQUIRED)
-find_package(PCL REQUIRED)
+
+
+# 02_Pose3SLAMExample_g2o 需要PCL 1.15，否则编译没问题，运行会崩溃
+find_package(PCL 1.15 REQUIRED) 
+
+
+# find_package(PCL REQUIRED)
 message(STATUS "PCL_DIR: ${PCL_DIR}")
 message(STATUS "PCL version: ${PCL_VERSION}")
 
@@ -59,12 +64,16 @@ find_package(Eigen3 REQUIRED)
 find_package(yaml-cpp REQUIRED)
 
 # oneTBB 在M-detector里已经有了 这里就不需要再下载一份了
-#
-set(TBB_INCLUDE_DIR "/home/xf/Desktop/catkin_ws/src/M-detector/oneTBB-2019_U8/include")
-set(TBB_LIBRARY_DIR "/home/xf/Desktop/catkin_ws/src/M-detector/oneTBB-2019_U8/build/linux_intel64_gcc_cc11.4.0_libc2.35_kernel6.8.0_release")
-include_directories(${TBB_INCLUDE_DIR})
-link_directories(${TBB_LIBRARY_DIR})
-find_package(TBB REQUIRED)
+# set(TBB_INCLUDE_DIR "/home/xf/Desktop/catkin_ws/src/M-detector/oneTBB-2019_U8/include")
+# set(TBB_LIBRARY_DIR "/home/xf/Desktop/catkin_ws/src/M-detector/oneTBB-2019_U8/build/linux_intel64_gcc_cc11.4.0_libc2.35_kernel6.8.0_release")
+# include_directories(${TBB_INCLUDE_DIR})
+# link_directories(${TBB_LIBRARY_DIR})
+# find_package(TBB REQUIRED)
+
+# 如果系统中已经安装了TBB，可以直接使用以下方式指定 ，否则需要手动指定库和头文件路径。
+set(TBB_LIBRARIES /usr/local/lib/libtbb.so /usr/local/lib/libtbbmalloc.so)
+set(TBB_INCLUDE_DIRS /usr/local/tbb-2019_U8/include)
+include_directories(${TBB_INCLUDE_DIRS})
 
 # 源码编译的gtsam 4.1.1
 # 设置GTSAM的路径
@@ -133,9 +142,22 @@ target_link_libraries(01_get_raw_data
   ${catkin_LIBRARIES}
   ${PCL_LIBRARIES}
   ${GeographicLib_LIBRARIES}
+  ${OpenCV_LIBRARIES}
+  ${GDAL_LIBRARIES}
   Geographic
   yaml-cpp
 )
+
+# add_executable(01_get_raw_data_img source/01_get_raw_data_img.cpp)
+# target_link_libraries(01_get_raw_data_img
+#   ${catkin_LIBRARIES}
+#   ${PCL_LIBRARIES}
+#   ${GeographicLib_LIBRARIES}
+#   ${OpenCV_LIBRARIES}
+#   ${GDAL_LIBRARIES}
+#   Geographic
+#   yaml-cpp
+# )
 
 add_executable(02_Pose3SLAMExample_g2o source/02_Pose3SLAMExample_g2o.cpp)
 target_link_libraries(02_Pose3SLAMExample_g2o
@@ -143,9 +165,9 @@ target_link_libraries(02_Pose3SLAMExample_g2o
   ${PCL_LIBRARIES}  
   ${LZ4_LIB}
   ${GDAL_LIBRARIES}
+  ${TBB_LIBRARIES}
   nano_gicp_lib
   gtsam
-  tbb
   yaml-cpp
   Geographic
 )
@@ -217,6 +239,17 @@ target_link_libraries(visualize_with_pose_pcd ${catkin_LIBRARIES} ${PCL_LIBRARIE
 add_executable(test_sensor_extrinsics source/sensor_extrinsics.cpp)
 target_link_libraries(test_sensor_extrinsics
   ${catkin_LIBRARIES}
+  Eigen3::Eigen
+  yaml-cpp
+)
+
+
+add_executable(sensor source/sensor.cpp)
+target_link_libraries(sensor
+  ${catkin_LIBRARIES}
+  ${OpenCV_LIBRARIES}
+  ${PCL_LIBRARIES}
+  ${GDAL_LIBRARIES}
   Eigen3::Eigen
   yaml-cpp
 )

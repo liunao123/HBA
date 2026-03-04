@@ -27,10 +27,13 @@
 #include <pcl/point_types.h>
 #include <pcl_conversions/pcl_conversions.h>
 #include <pcl/point_cloud.h>
-#include <sys/stat.h>
-#include <sys/types.h>
+
 #include <yaml-cpp/yaml.h>
 #include "common.hpp"
+
+#include <opencv2/opencv.hpp>
+
+#include "common_func.cpp"
 
 struct LidarData {
   double timestamp;
@@ -80,112 +83,157 @@ static std::unordered_set<double> g_saved_odom_ts;
 static std::string g_work_dir = ".";
 
 // 用于记录所有odom和点云的配对关系
-static std::map<double, double> g_lidar_to_odom; // lidar_ts -> odom_ts
+static std::map<double, int> key_frame_map; // lidar_ts -> odom_ts
 
-// Write a single pose YAML file using yaml-cpp
-void write_odom_yaml( double timestamp, const Eigen::Vector3d& position,
-           double lat, double lon, double alt,
-           const Eigen::Matrix3d& R,
-           const Eigen::Vector3d& enu_velocity,
-           double heading, double speed) {
-  // 静态变量保存上一帧的位姿和yaw
-  static Eigen::Vector3d last_position = Eigen::Vector3d::Zero();
-  static double last_yaw = 0.0;
-  static bool has_last = false;
-
-  // 计算当前yaw（从R中提取）
-  double curr_yaw = std::atan2(R(1,0), R(0,0)) * 180.0 / M_PI; // degree
-  // 计算距离和yaw变化
-  double dist = has_last ? (position - last_position).norm() : 0.0;
-  double dyaw = has_last ? std::fabs(curr_yaw - last_yaw) : 0.0;
-  if (dyaw > 180.0) dyaw = 360.0 - dyaw;
-
-  // 只有距离大于1m或yaw变化大于10度才保存
-  if (has_last && dist <= 1.0 && dyaw <= 10.0) {
-    return;
+// 查找key_frame_map中与ts最接近且差值小于0.05的时间戳和id
+std::pair<double, int> get_ts_and_id(double ts, const std::map<double, int>& key_frame_map, double threshold = 0.05) {
+  auto it = key_frame_map.lower_bound(ts);
+  double min_diff = std::numeric_limits<double>::max();
+  int id = -1;
+  double id_ts = -1;
+  if (it != key_frame_map.end()) {
+    min_diff = std::abs(it->first - ts);
+    id = it->second;
+    id_ts = it->first;
   }
+  if (it != key_frame_map.begin()) {
+    auto it_prev = std::prev(it);
+    double diff = std::abs(it_prev->first - ts);
+    if (diff < min_diff) {
+      min_diff = diff;
+      id = it_prev->second;
+      id_ts = it_prev->first;
+    }
+  }
+  if (min_diff >= threshold) {
+    return std::make_pair(-1, -1);
+  }
+  return std::make_pair(id_ts, id);
+}
 
-  // 保存到 work_dir/odoms/
+
+// 提取关键帧时间戳及其id，返回map<timestamp, id>，并去除enu_poses中非关键帧
+std::map<double, int> get_key_frames_timestamps(std::vector<TumPose>& enu_poses) {
+  std::map<double, int> ts2id;
+  if (enu_poses.empty()) return ts2id;
+  Eigen::Vector3d last_position = enu_poses[0].t;
+  double last_yaw = enu_poses[0].q.toRotationMatrix().eulerAngles(2,1,0)[0] * 180.0 / M_PI;
+  int id = 0;
+  std::vector<size_t> key_indices;
+  key_indices.push_back(0);
+  ts2id[enu_poses[0].timestamp] = id++;
+  for (size_t i = 1; i < enu_poses.size(); ++i) {
+    const auto& tp = enu_poses[i];
+    Eigen::Vector3d position = tp.t;
+    double curr_yaw = tp.q.toRotationMatrix().eulerAngles(2,1,0)[0] * 180.0 / M_PI;
+    double dist = (position - last_position).norm();
+    double dyaw = std::fabs(curr_yaw - last_yaw);
+    if (dyaw > 180.0) dyaw = 360.0 - dyaw;
+    if (dist > 1.0 || dyaw > 10.0) {
+      double ts = tp.timestamp;
+      ts2id[ts] = id++;
+      key_indices.push_back(i);
+      last_position = position;
+      last_yaw = curr_yaw;
+    }
+  }
+  // 保留关键帧
+  std::vector<TumPose> filtered;
+  for (size_t idx : key_indices) {
+    filtered.push_back(enu_poses[idx]);
+  }
+  enu_poses = std::move(filtered);
+  return ts2id;
+}
+
+// 将lidar_times中每个时间戳与enu_poses最近的元素配对，结果存入key_lidar_poses_at_enu
+// ! try 恢复之前 小于 0.05s 的时间差阈值，避免错误配对      
+         // double dt = fabs(gnss_queue.front().timestamp - lidar_queue.front().timestamp);
+        // if (dt < 0.005) {
+void get_lidar_time_pose_pairs(const std::vector<double>& lidar_times, const std::vector<TumPose>& enu_poses, std::vector<TumPose>& key_lidar_poses_at_enu) {
+  key_lidar_poses_at_enu.clear();
+  if (enu_poses.empty()) return;
+  const double max_dt = 0.005;
+
+  for (double ts : lidar_times) {
+    auto it = std::lower_bound(
+      enu_poses.begin(), enu_poses.end(), ts,
+      [](const TumPose& p, double t) { return p.timestamp < t; }
+    );
+
+    const TumPose* best = nullptr;
+
+    // 优先使用时间戳较小的一侧
+    if (it != enu_poses.begin()) {
+      auto it_prev = std::prev(it);
+      if (std::abs(it_prev->timestamp - ts) < max_dt) {
+        best = &(*it_prev);
+      }
+    }
+
+    // 若较小一侧没有满足阈值，再尝试较大一侧
+    if (!best && it != enu_poses.end()) {
+      if (std::abs(it->timestamp - ts) < max_dt) {
+        best = &(*it);
+      }
+    }
+
+    if (best) {
+      TumPose pose = *best;
+      pose.timestamp = ts; // 强制同步为lidar时间戳
+      key_lidar_poses_at_enu.push_back(pose);
+    }
+  }
+}
+
+// Write a single pose YAML file using yaml-cpp (只保留写文件逻辑)
+void write_odom_yaml(double timestamp, const GnssOdomData& g, int id) {
   std::string odom_dir = g_work_dir + "/odoms/";
-  struct stat st;
-  if (stat(odom_dir.c_str(), &st) != 0) {
-    mkdir(odom_dir.c_str(), 0777);
-  }
   std::ostringstream yaml_fn;
-  static int id = 0;
-  yaml_fn << odom_dir << id++ << "_" << std::fixed << std::setprecision(3) << timestamp << ".yaml";
+  yaml_fn << odom_dir << id << "_" << std::fixed << std::setprecision(3) << timestamp << ".yaml";
   std::cout << "[YAML] Writing: " << yaml_fn.str() << std::endl;
 
   YAML::Node node;
-  node["position"].push_back(position.x());
-  node["position"].push_back(position.y());
-  node["position"].push_back(position.z());
+  node["position"].push_back(g.position.x());
+  node["position"].push_back(g.position.y());
+  node["position"].push_back(g.position.z());
   {
     std::ostringstream ts_ss;
     ts_ss << std::fixed << std::setprecision(3) << timestamp;
     node["timestamp"] = ts_ss.str();
   }
-  node["position_lla"].push_back(lat);
-  node["position_lla"].push_back(lon);
-  node["position_lla"].push_back(alt);
-  node["pose"].push_back(R(0,0)); node["pose"].push_back(R(0,1)); node["pose"].push_back(R(0,2));
-  node["pose"].push_back(R(1,0)); node["pose"].push_back(R(1,1)); node["pose"].push_back(R(1,2));
-  node["pose"].push_back(R(2,0)); node["pose"].push_back(R(2,1)); node["pose"].push_back(R(2,2));
-  node["enu_velocity"].push_back(enu_velocity.x());
-  node["enu_velocity"].push_back(enu_velocity.y());
-  node["enu_velocity"].push_back(enu_velocity.z());
-  node["heading"] = heading;
-  node["speed"] = speed;
+  node["position_lla"].push_back(g.position_lla.x());
+  node["position_lla"].push_back(g.position_lla.y());
+  node["position_lla"].push_back(g.position_lla.z());
+  node["pose"].push_back(g.pose(0,0)); node["pose"].push_back(g.pose(0,1)); node["pose"].push_back(g.pose(0,2));
+  node["pose"].push_back(g.pose(1,0)); node["pose"].push_back(g.pose(1,1)); node["pose"].push_back(g.pose(1,2));
+  node["pose"].push_back(g.pose(2,0)); node["pose"].push_back(g.pose(2,1)); node["pose"].push_back(g.pose(2,2));
+  node["enu_velocity"].push_back(g.enu_velocity.x());
+  node["enu_velocity"].push_back(g.enu_velocity.y());
+  node["enu_velocity"].push_back(g.enu_velocity.z());
+  node["heading"] = g.heading;
+  node["speed"] = g.speed;
   std::ofstream fout(yaml_fn.str());
   fout << node;
   fout.close();
-
-  // 更新上一帧
-  last_position = position;
-  last_yaw = curr_yaw;
-  has_last = true;
-
-  // 记录已保存的odom时间戳
-  g_saved_odom_ts.insert(timestamp);
 }
 
-// 启动YAML对齐导出线程，返回std::thread对象
-std::thread start_yaml_worker(std::deque<GnssOdomData>& gnss_queue, std::deque<LidarData>& lidar_queue,
-                              std::mutex& mtx, std::condition_variable& cv, bool& finished) {
-  return std::thread([&](){
-    while (true) {
-      std::unique_lock<std::mutex> lock(mtx);
-      cv.wait(lock, [&]{ return !gnss_queue.empty() && !lidar_queue.empty() || finished; });
-      if (finished && (gnss_queue.empty() || lidar_queue.empty())) break;
-      // 对齐逻辑
-      while (!gnss_queue.empty() && !lidar_queue.empty()) {
-        double dt = fabs(gnss_queue.front().timestamp - lidar_queue.front().timestamp);
-        if (dt < 0.005) {
-          // 匹配，导出YAML，lidar时间戳命名
-          const auto& g = gnss_queue.front();
-          const auto& l = lidar_queue.front();
-          // 拆解GnssOdomData结构体，按新定义写入
-          write_odom_yaml(
-            l.timestamp,
-            g.position,
-            g.position_lla.x(), g.position_lla.y(), g.position_lla.z(),
-            g.pose,
-            g.enu_velocity,
-            g.heading,
-            g.speed
-          );
-          gnss_queue.pop_front();
-          lidar_queue.pop_front();
-        } else if (gnss_queue.front().timestamp < lidar_queue.front().timestamp) {
-          // GNSS太早，丢弃
-          gnss_queue.pop_front();
-        } else {
-          // LiDAR太早，丢弃
-          lidar_queue.pop_front();
-        }
-      }
+// 实现write_odoms函数
+void write_odoms(const std::map<double, int>& key_frame_map, const std::deque<GnssOdomData>& gnss_queue) {
+  for (const auto& kv : key_frame_map) {
+    double ts = kv.first;
+    int id = kv.second;
+    // 在gnss_queue中查找对应时间戳的数据 （允许一定的时间误差，比如0.05秒）
+    auto it = std::find_if(gnss_queue.begin(), gnss_queue.end(), [ts](const GnssOdomData& g) {
+      return std::abs(g.timestamp - ts) < 5e-3;
+    });
+    if (it != gnss_queue.end()) {
+      write_odom_yaml(ts, *it, id);
+      g_saved_odom_ts.insert(ts);
+    } else {
+      std::cerr << "[write_odoms] No GNSS data found for ts=" << std::fixed << std::setprecision(3) << ts << std::endl;
     }
-  });
+  }
 }
 
 // 点云去运动畸变，输入原始点云和 enu_poses，返回去畸变后的点云
@@ -253,14 +301,18 @@ void save_pointcloud_to_pcd_with_undistort(const sensor_msgs::PointCloud2 &pc_ms
 
   // 保存到 work_dir/pointclouds/
   std::string dir = g_work_dir + "/pointclouds/";
-  struct stat st;
-  if (stat(dir.c_str(), &st) != 0)
-  {
-    mkdir(dir.c_str(), 0777);
+  
+  timestamp = std::floor(timestamp * 1000.0 + 0.5) / 1000.0;
+  auto ts_id_pair = get_ts_and_id(timestamp, key_frame_map);
+  timestamp = ts_id_pair.first;
+  int id = ts_id_pair.second;
+  if (id == -1) {
+    return;
   }
-  static int id = 0;
+
   std::ostringstream oss;
-  oss << dir << id++ << "_" << std::fixed << std::setprecision(3) << timestamp << ".pcd";
+  oss << dir << id << "_" << std::fixed << std::setprecision(3) << timestamp << ".pcd";
+  // oss << dir << std::fixed << std::setprecision(3) << timestamp << ".pcd";
   std::string filename = oss.str();
 
   // std::cerr << "to save [PCD] : " << std::endl;
@@ -293,7 +345,7 @@ void save_pointcloud_to_pcd_with_undistort(const sensor_msgs::PointCloud2 &pc_ms
   // 保存去畸变点云
   if (pcl::io::savePCDFile(filename, undistorted) == 0)
   {
-    std::cout << "[PCD] Saved (undistorted): " << filename << std::endl;
+    std::cout << " NOTE [PCD] Saved (undistorted): " << filename << std::endl;
   }
   else
   {
@@ -301,13 +353,19 @@ void save_pointcloud_to_pcd_with_undistort(const sensor_msgs::PointCloud2 &pc_ms
   }
 }
 
+// void create_dir_if_not_exists(const std::string& dir) 
+// {
+//   struct stat st;
+//   if (stat(dir.c_str(), &st) != 0) {
+//     mkdir(dir.c_str(), 0777);
+//   }
+// }
 
 int main(int argc, char **argv)
 {
   // 队列和同步
   std::deque<GnssOdomData> gnss_queue;
   std::deque<LidarData> lidar_queue;
-  std::mutex mtx;
   std::condition_variable cv;
   bool finished = false;
 
@@ -328,26 +386,11 @@ int main(int argc, char **argv)
   std::string utm_offset = temp_file_dir + "/utm_offset.yaml";
  
   g_work_dir = work_dir;
-
-  // Ensure work_dir exists
-  struct stat st;
-  if (stat(work_dir.c_str(), &st) != 0) {
-    if (mkdir(work_dir.c_str(), 0777) != 0) {
-        std::cerr << "Failed to create work_dir: " << work_dir << std::endl;
-        return 1;
-    }
-  }
-
-  // Ensure temp_file_dir exists
-  if (stat(temp_file_dir.c_str(), &st) != 0) {
-    if (mkdir(temp_file_dir.c_str(), 0777) != 0) {
-        std::cerr << "Failed to create temp_file_dir: " << temp_file_dir << std::endl;
-        return 1;
-    }
-  }
-
-  // 启动YAML对齐导出线程
-  std::thread worker = start_yaml_worker(gnss_queue, lidar_queue, mtx, cv, finished);
+  create_dir_if_not_exists( g_work_dir );
+  create_dir_if_not_exists( temp_file_dir );
+  create_dir_if_not_exists( g_work_dir + "/images/" );
+  create_dir_if_not_exists( g_work_dir + "/odoms/" );
+  create_dir_if_not_exists( g_work_dir + "/pointclouds/" );
 
   ros::init(argc, argv, "bag_gnss_to_tum");
 
@@ -398,26 +441,14 @@ int main(int argc, char **argv)
   std::vector<Eigen::Vector3d> gnss_utm_positions; // store raw UTM x,y,z per GNSS
   std::vector<double> odom_times; // 记录所有odom时间戳
 
-  std::cout << "Extrinsic (GNSS->LiDAR):\n  R = \n" << q_extr.toRotationMatrix() << "\n  t = [" << t_extr.transpose() << "]\n";
-  // T_lidar = T_gnss * X (if X is expressed in GNSS frame to LiDAR)
-  // Here we use right-multiplication on homogeneous: P_lidar = P_gnss * X
-  
-  // create directory if not exists
-  if (!temp_file_dir.empty()) {
-    // trailing slash normalization
-    if (temp_file_dir.back() != '/' && temp_file_dir.back() != '\\') temp_file_dir += '/';
-    struct stat st;
-    if (stat(temp_file_dir.c_str(), &st) != 0) {
-      mkdir(temp_file_dir.c_str(), 0777);
-    }
-  }
+
   int count_gnss = 0;
   for (const rosbag::MessageInstance &m : view) {
     count_gnss++;
-    // if (count_gnss > 3000)
-    // {
-    //   break;
-    // }
+    if (count_gnss > 2500)
+    {
+      break;
+    }
     std::cout << "Processing message #" << count_gnss << "\r" << std::flush;
     
     if (m.getTopic() == gnss_topic) {
@@ -427,77 +458,41 @@ int main(int argc, char **argv)
       enu.convertToENU(msg->latitude, msg->longitude, msg->altitude, enu_x, enu_y, enu_z);
       Eigen::Quaterniond q_g = rpyDegToQuat( msg->roll, msg->pitch, msg->yaw );
       auto t_g = Eigen::Vector3d(enu_x,enu_y,enu_z);
+
+      // 计算LiDAR在ENU下的位姿
       Eigen::Quaterniond q_l = q_g * q_extr;
       Eigen::Vector3d p_l = t_g + q_g * t_extr;
-      TumPose tp(q_l, p_l, msg->header.stamp.toSec());
+
+      double timestamp = msg->header.stamp.toSec();
+      timestamp = std::floor(timestamp * 1000.0 + 0.5) / 1000.0;
+
+      TumPose tp(q_l, p_l, timestamp);
       enu_poses.emplace_back(tp);
-      odom_times.emplace_back(msg->header.stamp.toSec());
+      odom_times.emplace_back(timestamp);
       // ...existing code for GnssOdomData, utm_poses, etc...
       GnssOdomData g;
-      g.timestamp = msg->header.stamp.toSec();
+      g.timestamp = timestamp;
       g.position = t_g;
       g.position_lla = Eigen::Vector3d(msg->latitude, msg->longitude, msg->altitude);
       g.pose = q_g.toRotationMatrix();
       g.enu_velocity = Eigen::Vector3d(msg->enu_velocity.x, msg->enu_velocity.y, msg->enu_velocity.z);
       g.heading = msg->heading;
       g.speed = msg->speed;
-      {
-        std::lock_guard<std::mutex> lock(mtx);
-        gnss_queue.push_back(g);
-        cv.notify_one();
-      }
-
+      gnss_queue.push_back(g);
     } else if (m.getTopic() == lidar_topic) {
       sensor_msgs::PointCloud2::ConstPtr pc = m.instantiate<sensor_msgs::PointCloud2>();
       if (!pc) continue;
       double ts = pc->header.stamp.toSec();
-      lidar_times.emplace_back(ts);
-      // LiDAR数据入队
-      LidarData l; l.timestamp = ts;
-      {
-        std::lock_guard<std::mutex> lock(mtx);
-        lidar_queue.push_back(l);
-        cv.notify_one();
-      }
-
+      lidar_times.push_back(ts);
     }
   }
 
+  get_lidar_time_pose_pairs(lidar_times, enu_poses, key_lidar_poses_at_enu);
 
-  // 1. 配对每个雷达时间戳最近的odom时间戳，形成配对集合，并一一保存
-  struct LidarOdomPair {
-    double lidar_ts;
-    double odom_ts;
-  };
-  std::vector<LidarOdomPair> lidar_odom_pairs;
-  for (double ts_lidar : lidar_times) {
-    double min_dt = std::numeric_limits<double>::max();
-    double best_odom = -1;
-    for (double ts_odom : odom_times) {
-      double dt = std::abs(ts_lidar - ts_odom);
-      if (dt < min_dt) {
-        min_dt = dt;
-        best_odom = ts_odom;
-      }
-    }
-    if (best_odom >= 0) {
-      lidar_odom_pairs.push_back({ts_lidar, best_odom});
-    }
-  }
-
-  // 2. 保存与雷达帧一一对应的odom帧
-  for (const auto& pair : lidar_odom_pairs) {
-    double odom_ts = pair.odom_ts;
-    auto it = std::find_if(enu_poses.begin(), enu_poses.end(), [&](const TumPose& tp)
-    { return std::abs(tp.timestamp - odom_ts) < 1e-2; });
-
-    if (it == enu_poses.end()) continue;
-
-    Eigen::Vector3d pos = it->t;
-    Eigen::Matrix3d R = it->q.toRotationMatrix();
-    geometry_msgs::Vector3 dummy_vel; dummy_vel.x = 0; dummy_vel.y = 0; dummy_vel.z = 0;
-    g_saved_odom_ts.insert(odom_ts);   
-  }
+  std::cout << "key_lidar_poses_at_enu: " << key_lidar_poses_at_enu.size() << std::endl;
+  key_frame_map = get_key_frames_timestamps(key_lidar_poses_at_enu);
+  write_odoms(key_frame_map, gnss_queue);
+  std::cout << "Total GNSS messages: " << enu_poses.size() << ", total key frames: " << key_frame_map.size() << std::endl;
 
   // 3. 保存所有雷达帧对应的点云
   bag.close();
@@ -505,27 +500,79 @@ int main(int argc, char **argv)
   bag2.open(bag_path, rosbag::bagmode::Read);
   rosbag::View view2(bag2);
 
+  count_gnss = 0;
   for (const rosbag::MessageInstance &m : view2) {
-    if (m.getTopic() == lidar_topic) {
-      sensor_msgs::PointCloud2::ConstPtr pc = m.instantiate<sensor_msgs::PointCloud2>();
-      if (!pc) continue;
-      double ts = pc->header.stamp.toSec();
-      
-      // 判断内存集合中是否有对应odom
-      if (g_saved_odom_ts.find(ts) == g_saved_odom_ts.end()) {
-        // 没有对应odom，不保存点云
+    count_gnss++;
+    if (count_gnss > 3000)
+    {
+      break;
+    }
+    if (m.getTopic() == gnss_topic) {
+      // 已经在第一轮处理过了，这里跳过
+      continue;
+    } 
+
+    if (m.getTopic().find("camera") != std::string::npos) 
+    {
+      auto topic_name = m.getTopic();
+      // 极简容错：先找两个/的位置，再判断是否有效
+      size_t pos1 = topic_name.find('/');
+      size_t pos2 = topic_name.find('/', pos1+1);
+      std::string cam_name = "unknown";
+      if (pos1 != std::string::npos && pos2 != std::string::npos) {
+        cam_name = topic_name.substr(pos1+1, pos2-pos1-1);
+      }
+
+      sensor_msgs::Image::ConstPtr img = m.instantiate<sensor_msgs::Image>();
+      if (!img) continue;
+
+      double ts = img->header.stamp.toSec();
+      ts = std::floor(ts * 1000.0 + 0.5) / 1000.0;
+      auto ts_id_pair = get_ts_and_id(ts, key_frame_map);
+      double id_ts = ts_id_pair.first;
+      int img_id = ts_id_pair.second;
+      if (img_id == -1) {
         continue;
       }
 
-      // 查找enu_poses中与ts最接近的一个
-      auto it_pose = std::min_element(enu_poses.begin(), enu_poses.end(), [ts](const TumPose& a, const TumPose& b) {
-        return std::abs(a.timestamp - ts) < std::abs(b.timestamp - ts);
-      });
-      if (it_pose != enu_poses.end()) {
-        it_pose->timestamp = ts; // 强制同步时间戳
-        key_lidar_poses_at_enu.push_back(*it_pose);
-      }
+      // 保存图像到 work_dir/images/
+      std::string dir = g_work_dir + "/images/" + cam_name + "/";
+      create_dir_if_not_exists(dir);
 
+      std::ostringstream oss;
+      oss << dir << img_id << "_" << std::fixed << std::setprecision(3) << id_ts << ".jpg";
+      std::string filename = oss.str();
+      // 转换为cv::Mat并保存
+      try {
+        cv::Mat mat;
+        // std::cerr << "[Image549] img->encoding: " << img->encoding << std::endl;
+        if (img->encoding == "rgb8" || img->encoding == "bgr8") {
+          mat = cv::Mat(img->height, img->width, img->encoding == "rgb8" ? CV_8UC3 : CV_8UC3, const_cast<uchar*>(&img->data[0]), img->step);
+          if (img->encoding == "rgb8") {
+            cv::cvtColor(mat, mat, cv::COLOR_RGB2BGR);
+          }
+        } else if (img->encoding == "mono8") {
+          mat = cv::Mat(img->height, img->width, CV_8UC1, const_cast<uchar*>(&img->data[0]), img->step);
+        } else if (img->encoding == "bayer_rggb8") {
+          cv::Mat bayer(img->height, img->width, CV_8UC1, const_cast<uchar*>(&img->data[0]), img->step);
+          // cv::cvtColor(bayer, mat, cv::COLOR_BayerRG2BGR);
+          cv::cvtColor(bayer, mat, cv::COLOR_BayerRG2RGB); // id4
+        } else {
+          std::cerr << "[Image] Unsupported encoding: " << img->encoding << std::endl;
+          continue;
+        }
+        if (!cv::imwrite(filename, mat)) {
+          std::cerr << "[Image] Failed to save: " << filename << std::endl;
+        } else {
+          // std::cout << "[Image] Saved: " << filename << std::endl;
+        }
+      } catch (const std::exception& e) {
+        std::cerr << "[Image] Exception: " << e.what() << std::endl;
+      }
+    } else if (m.getTopic() == lidar_topic) {
+      sensor_msgs::PointCloud2::ConstPtr pc = m.instantiate<sensor_msgs::PointCloud2>();
+      if (!pc) continue;
+      double ts = pc->header.stamp.toSec();
       // 保存所有雷达帧点云（与odom一一对应）
       save_pointcloud_to_pcd_with_undistort(*pc, ts, enu_poses);
     }
@@ -581,13 +628,6 @@ int main(int argc, char **argv)
     ROS_ERROR("Wrote ENU origin to %s (with UTM) Failed ...... ", utm_offset.c_str());
     std::ofstream(utm_offset) << node;
   }
-  // 通知工作线程结束
-  {
-    std::lock_guard<std::mutex> lock(mtx);
-    finished = true;
-    cv.notify_all();
-  }
-  worker.join();
+ 
   return 0;
-
 }
