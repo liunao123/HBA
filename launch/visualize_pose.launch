@@ -5,8 +5,10 @@
     <!-- <param name="pose_file" type="string" value="/mnt/nvme0n1p2/data/0930/gicp_trajectory.tum"/> -->
     <!-- <param name="pose_file" type="string" value="/mnt/nvme0n1p2/data/0930/gnss_lidar_pose_trajectory.tum"/> -->
     
-    <param name="pose_file" type="string" value="/mnt/nvme0n1p2/data/nongan_m2/global_lidar_poses_opt.tum"/>
-    <param name="pcd_path" type="string" value="/mnt/nvme0n1p2/data/nongan_m2_o/pcd/"/>
+    <!-- <param name="pose_file" type="string" value="/media/xf/Elements/id4_1202/raw_data_3/debug_file/opt_pose_enu.tum"/> -->
+    <param name="pose_file" type="string" value="/media/xf/Elements/id4_1202/raw_data_3/debug_file/opt_pose_utm.tum"/>
+    <!-- <param name="pose_file" type="string" value="/media/xf/Elements/id4_1202/raw_data_3/debug_file/lidar_at_enu.tum"/> -->
+    <param name="pcd_path" type="string" value="/media/xf/Elements/id4_1202/raw_data_3/pointclouds/"/>
 
 
 
@@ -20,7 +22,7 @@
     <param name="save_global_map" type="bool" value="false"/>
     <param name="pcd_start_index" type="int" value="0"/>
     <param name="pcd_end_index" type="int" value="10000"/>
-    <param name="pub_step" type="int" value="10"/>
+    <param name="pub_step" type="int" value="1"/>
     
     <param name="pcd_name_fill_num" type="int" value="6"/> <!--set 5 for kitti07 and 0 for park-->
   </node>

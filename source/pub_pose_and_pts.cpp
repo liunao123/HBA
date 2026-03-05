@@ -14,10 +14,14 @@
 #include <vector>
 #include <string>
 #include <iostream>
+#include "common_func.cpp"
 #include "common.hpp"
-#include "file_utils.hpp"
+
 #include <algorithm>
 
+// typedef pcl::PointXYZI PointType;
+typedef pcl::PointXYZRGB PointType;
+typedef pcl::PointCloud<PointType> PointCloudXYZI;
 
 int main(int argc, char** argv) {
     ros::init(argc, argv, "pub_pose_and_pts");
@@ -27,15 +31,15 @@ int main(int argc, char** argv) {
 
     tf2_ros::TransformBroadcaster tf_broadcaster;
 	// 指定要遍历的文件夹路径
-	std::string folder = "/media/xf/Elements/id4_1202/raw_data_3/"; // 可根据需要修改
+	std::string folder = "/media/xf/Elements/id4_1202/20251220_3/"; // 可根据需要修改
 	// std::string points_folder = folder + "/pointclouds/"; 
-	std::string points_folder = folder + "/pointclouds/"; 
+	std::string points_folder = folder + "/pointclouds_rgb/"; 
 	std::string odoms_folder = folder + "/odoms/"; 
 	std::vector<std::string> pcd_files = getFilesWithExtension(points_folder, ".pcd");
 	// std::vector<std::string> odoms_files = getFilesWithExtension(odoms_folder, ".yaml");
 	ROS_INFO("Found %zu pcd files.", pcd_files.size());
     
-    std::string tum_odom_file = folder + "/debug_file/lidar_at_enu.tum"; 
+    std::string tum_odom_file = folder + "/debug_file/opt_pose_utm.tum"; 
     std::vector<TumPose> tum_odoms = readTumPose( tum_odom_file );
 	ROS_INFO("Found %zu tum_odoms files .", tum_odoms.size());
 
@@ -58,8 +62,8 @@ int main(int argc, char** argv) {
         odom_msg.pose.pose.orientation.w = tum_odoms[i].q.w();
         odom_pub.publish(odom_msg);
         // 发布点云
-        pcl::PointCloud<pcl::PointXYZI>::Ptr cloud(new pcl::PointCloud<pcl::PointXYZI>());
-        if (pcl::io::loadPCDFile<pcl::PointXYZI>(pcd_files[i], *cloud) == -1) //* 读取PCD            
+        pcl::PointCloud<PointType>::Ptr cloud(new pcl::PointCloud<PointType>());
+        if (pcl::io::loadPCDFile<PointType>(pcd_files[i], *cloud) == -1) //* 读取PCD            
         {
             PCL_ERROR("Couldn't read file %s \n", pcd_files[i].c_str());
             continue;

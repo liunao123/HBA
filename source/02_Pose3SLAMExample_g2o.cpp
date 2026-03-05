@@ -21,6 +21,7 @@
 
 #include <gtsam/geometry/Pose2.h>
 
+#include <filesystem>
 #include <fstream>
 #include <iomanip>
 #include <map>
@@ -47,7 +48,7 @@
 #include <nano_gicp/nano_gicp.h>
 // Common configuration and structures
 #include "common.hpp"
-#include "file_utils.hpp"
+#include "common_func.cpp"
 
 using namespace std;
 using namespace gtsam;
@@ -942,6 +943,10 @@ int main(int argc, char **argv)
     std::string pointclouds_path = work_dir + "/pointclouds";
     
     std::string temp_file_dir = work_dir + "/debug_file/";
+    std::string pose_dir_ready = work_dir + "/spare/vehicle_geo_pose/";
+    create_dir_if_not_exists( pose_dir_ready );
+    // exit(-1);
+    
     std::string output_g2o_file = temp_file_dir + "pose_graph.g2o";
     std::string opt_tum_file = temp_file_dir + "opt_pose_enu.tum";
 
@@ -1022,8 +1027,8 @@ int main(int argc, char **argv)
                                                    gicp_trans_std_z * gicp_trans_std_z).finished();
     auto gicpNoise = noiseModel::Diagonal::Variances(gicpVars);
 
-    if (!tum_odom_file.empty()) {
-    // if (0) {
+    // if (!tum_odom_file.empty()) {
+    if (0) {
         // 直接从TUM文件读取相邻帧的位姿，构建里程计约束
         std::cout << "[INFO] Using TUM file for odometry constraints: " << tum_odom_file << std::endl;
         std::vector<TumPose> tum_odoms = readTumPose(tum_odom_file );
@@ -1099,7 +1104,7 @@ int main(int argc, char **argv)
         std::cout << "==========================================\n" << std::endl;
     }
     
-    addLoopToGraph(graph, initial, key_frame_timestamps , pointclouds_path, loop_config);
+    // addLoopToGraph(graph, initial, key_frame_timestamps , pointclouds_path, loop_config);
 
     // exit (0);
  
@@ -1149,11 +1154,37 @@ int main(int argc, char **argv)
     // 基于 ENU 原点经纬高，利用 GeographicLib 将优化后的 ENU 轨迹反算为经纬度再投影到 UTM
     auto utm_opt_pose = to_utm_pose(opt_enu_poses, temp_file_dir);
 
+    EnuOriginInfo origin_info;
+    read_enu_origin_yaml(temp_file_dir + "/utm_offset.yaml", origin_info);
+    PoseData pose_data;
+    pose_data.offset_utm = Eigen::Vector3d::Zero();
+    pose_data.offset_utm.x() = origin_info.utm_x;
+    pose_data.offset_utm.y() = origin_info.utm_y;   
+    pose_data.offset_utm.z() = origin_info.utm_alt;
+
     cloud_ptr global_map(new pcl::PointCloud<pointtype>());
     // for (const auto pose : utm_opt_pose)
     for (int i = 0; i < utm_opt_pose.size(); ++i)
     {
         const auto &pose = utm_opt_pose[i];
+        if (1)
+        {
+            pose_data.timestamp = pose.timestamp;
+            Eigen::Affine3d tf = Eigen::Affine3d::Identity();
+            tf.linear() = pose.q.normalized().toRotationMatrix();
+            tf.translation() = pose.t;
+            pose_data.transformation_matrix = tf;
+
+            std::ostringstream pose_yaml_path;
+            pose_yaml_path << pose_dir_ready << "/" << i << "_"
+                           << std::fixed << std::setprecision(3) << pose.timestamp << ".yaml";
+
+            if (!writePoseToYaml(pose_data, pose_yaml_path.str()))
+            {
+                std::cerr << "Failed to write pose YAML: " << pose_yaml_path.str() << std::endl;
+            }
+        }
+
         const auto pts = loadPCDForIdTimestamp(pointclouds_path, i, pose.timestamp);
         if (!pts || pts->empty())
         {

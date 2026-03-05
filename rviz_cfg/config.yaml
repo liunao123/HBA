@@ -1,6 +1,7 @@
 # 配置参数示例
 # bag_path: /home/xf/Desktop/catkin_ws/data/1028_3.bag
-bag_path: /media/xf/Elements/id4_1202/bag1/20251220_3.bag
+# bag_path: //media/xf/Elements/id4_1202/20251220_1.bag
+bag_path: /media/xf/Elements/id4_1202/bag1/20251220_3/cam_all_2025-12-20-11-01-43_0.bag
 gnss_topic: /chcnav/devpvt
 # lidar_topic: /lidar_points
 lidar_topic: /hesai/pandar_points 
@@ -8,7 +9,7 @@ lidar_topic: /hesai/pandar_points
 # File paths and working directory
 paths:
   # work_dir: "/home/xf/Desktop/catkin_ws/data/test_id4/"
-  work_dir: "/media/xf/Elements/id4_1202/raw_data_3/"
+  work_dir: "/media/xf/Elements/id4_1202/20251220_3/"
 
 # Configuration file for Pose3SLAMExample_g2o
 
@@ -71,7 +72,7 @@ loop_closure:
   search:
     start_index: 0              # Start index for loop search
     end_index: 20000             # End index for loop search
-    step: 10                     # Step size for loop search
+    step: 2                     # Step size for loop search
     min_key_diff: 20            # Minimum key difference to consider
   
   # Loop file saving/loading

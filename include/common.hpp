@@ -6,6 +6,9 @@
 #include <vector>
 #include <Eigen/Dense>
 #include <yaml-cpp/yaml.h>
+#include <GeographicLib/UTMUPS.hpp>
+#include <GeographicLib/Geocentric.hpp>
+#include <GeographicLib/LocalCartesian.hpp>
 
 // for taojian ot 128
 // struct PandarPointXYZIRT {
@@ -118,6 +121,232 @@ struct GnssOdomData
     double heading;                  // heading angle
     double speed;                    // speed magnitude
 };
+
+
+// Local ENU converter using GeographicLib::LocalCartesian
+struct ENUConverter {
+  bool initialized = false;
+  double lat0 = 0.0, lon0 = 0.0, h0 = 0.0;
+  std::unique_ptr<GeographicLib::LocalCartesian> proj;
+
+  void init(double lat_ref, double lon_ref, double h_ref) {
+    lat0 = lat_ref; lon0 = lon_ref; h0 = h_ref;
+    proj.reset(new GeographicLib::LocalCartesian(lat0, lon0, h0));
+    initialized = true;
+    ROS_INFO("LocalCartesian ENU initialized at lat=%.8f lon=%.8f h=%.3f", lat0, lon0, h0);
+  }
+
+  // convert lat/lon/alt -> ENU (x east, y north, z up)
+  void convertToENU(double lat, double lon, double alt, double &x, double &y, double &z) {
+    if (!initialized) {
+      init(lat, lon, alt);
+    }
+    proj->Forward(lat, lon, alt, x, y, z);
+  }
+};
+
+struct EnuOriginInfo {
+  double lat = 0.0;
+  double lon = 0.0;
+  double alt = 0.0;
+  double utm_x = 0.0;
+  double utm_y = 0.0;
+  double utm_alt = 0.0;
+  int utm_zone = 0;
+  bool utm_northp = true;
+  bool has_utm = false;
+};
+
+bool write_enu_origin_yaml(const ENUConverter& enu, const std::string& filepath) {
+  if (filepath.empty()) {
+    ROS_ERROR("UTM offset path is empty, skip writing ENU origin.");
+    return false;
+  }
+  if (!enu.initialized) {
+    YAML::Node node;
+    node["error"] = "ENU origin not initialized";
+    std::ofstream fout(filepath);
+    if (fout.is_open()) {
+      fout << node;
+      fout.close();
+    }
+    ROS_ERROR("Failed to write ENU origin to %s: ENU not initialized.", filepath.c_str());
+    return false;
+  }
+  try {
+    double utm_x = 0.0;
+    double utm_y = 0.0;
+    int utm_zone = 0;
+    bool utm_northp = true;
+    GeographicLib::UTMUPS::Forward(enu.lat0, enu.lon0, utm_zone, utm_northp, utm_x, utm_y);
+
+    YAML::Node node;
+    node["lat"] = enu.lat0;
+    node["lon"] = enu.lon0;
+    node["alt"] = enu.h0;
+    node["utm_offset"]["x"] = utm_x;
+    node["utm_offset"]["y"] = utm_y;
+    node["utm_offset"]["alt"] = enu.h0;
+    node["utm_offset"]["zone"] = utm_zone;
+    node["utm_offset"]["northp"] = utm_northp;
+
+    std::ofstream fout(filepath);
+    if (!fout.is_open()) {
+      ROS_ERROR("Unable to open %s for writing ENU origin.", filepath.c_str());
+      return false;
+    }
+    fout << node;
+    fout.close();
+    ROS_INFO("Wrote ENU origin to %s (with UTM)", filepath.c_str());
+    return true;
+  } catch (const std::exception& e) {
+    ROS_ERROR("Exception while writing ENU origin YAML (%s): %s", filepath.c_str(), e.what());
+    return false;
+  }
+}
+
+bool read_enu_origin_yaml(const std::string& filepath, EnuOriginInfo& origin_info) {
+  origin_info = EnuOriginInfo();
+  if (filepath.empty()) {
+    ROS_ERROR("UTM offset path is empty, skip reading ENU origin.");
+    return false;
+  }
+  try {
+    YAML::Node node = YAML::LoadFile(filepath);
+    if (!node["lat"] || !node["lon"] || !node["alt"]) {
+      ROS_ERROR("Missing ENU origin fields in %s.", filepath.c_str());
+      return false;
+    }
+    origin_info.lat = node["lat"].as<double>();
+    origin_info.lon = node["lon"].as<double>();
+    origin_info.alt = node["alt"].as<double>();
+
+    if (node["utm_offset"]) {
+      const YAML::Node& utm_node = node["utm_offset"];
+      if (utm_node["x"]) origin_info.utm_x = utm_node["x"].as<double>();
+      if (utm_node["y"]) origin_info.utm_y = utm_node["y"].as<double>();
+      if (utm_node["alt"]) origin_info.utm_alt = utm_node["alt"].as<double>();
+      if (utm_node["zone"]) origin_info.utm_zone = utm_node["zone"].as<int>();
+      if (utm_node["northp"]) origin_info.utm_northp = utm_node["northp"].as<bool>();
+      origin_info.has_utm = true;
+    } else {
+      origin_info.has_utm = false;
+    }
+
+    ROS_INFO("Read ENU origin from %s", filepath.c_str());
+    return true;
+  } catch (const std::exception& e) {
+    ROS_ERROR("Failed to read ENU origin YAML %s: %s", filepath.c_str(), e.what());
+    return false;
+  }
+}
+
+struct PoseData
+{
+    double timestamp;
+    Eigen::Affine3d transformation_matrix;
+    Eigen::Vector3d offset_utm;
+};
+
+inline PoseData readPoseFromYaml(const std::string &yaml_file)
+{
+    PoseData pose_data;
+    pose_data.transformation_matrix = Eigen::Affine3d::Identity();
+
+    try
+    {
+        YAML::Node config = YAML::LoadFile(yaml_file);
+
+        // 读取时间戳 - 使用高精度
+        pose_data.timestamp = config["timestamp"].as<long double>();
+
+        // 读取变换矩阵 (4x4) - 使用高精度
+        auto pose_utm = config["pose_utm"];
+        Eigen::Matrix4d matrix = Eigen::Matrix4d::Identity();
+
+        for (int i = 0; i < 16; ++i)
+        {
+            int row = i / 4;
+            int col = i % 4;
+            // 使用long double确保精度，然后转换为double
+            long double value = pose_utm[i].as<long double>();
+            matrix(row, col) = static_cast<double>(value);
+            // std::cout << std::fixed << std::setprecision(15) << "pose_utm[" << i << "]: " << value << std::endl;
+        }
+
+        // 将Matrix4d转换为Affine3d
+        pose_data.transformation_matrix = Eigen::Affine3d(matrix);
+
+        // 读取偏移量 - 使用高精度
+        auto offset_utm = config["offset_utm"];
+        pose_data.offset_utm(0) = offset_utm[0].as<long double>();
+        pose_data.offset_utm(1) = offset_utm[1].as<long double>();
+        pose_data.offset_utm(2) = offset_utm[2].as<long double>();
+
+        // if (!init_flag)
+        // {
+        //     init_flag = true;
+        //     OFFSET_X = pose_data.offset_utm(0);
+        //     OFFSET_Y = pose_data.offset_utm(1);
+        //     OFFSET_Z = pose_data.offset_utm(2);
+        //     // std::cout << std::fixed << std::setprecision(3) << "OFFSET_X: " << OFFSET_X << std::endl;
+        //     // std::cout << std::fixed << std::setprecision(3) << "OFFSET_Y: " << OFFSET_Y << std::endl;
+        //     // std::cout << std::fixed << std::setprecision(3) << "OFFSET_Z: " << OFFSET_Z << std::endl;
+        // }
+        pose_data.offset_utm = pose_data.offset_utm ; // - Eigen::Vector3d(OFFSET_X, OFFSET_Y, OFFSET_Z);
+    }
+    catch (const std::exception &e)
+    {
+        std::cerr << "Error reading YAML file " << yaml_file << ": " << e.what() << std::endl;
+        throw;
+    }
+
+    return pose_data;
+}
+
+inline bool writePoseToYaml(const PoseData &pose, const std::string &yaml_file)
+{
+    try
+    {
+        YAML::Node root;
+        const double timestamp_3dp = std::round(pose.timestamp * 1000.0) / 1000.0;
+        std::ostringstream ts_stream;
+        ts_stream << std::fixed << std::setprecision(3) << timestamp_3dp;
+        root["timestamp"] = ts_stream.str();
+
+        Eigen::Matrix4d matrix = pose.transformation_matrix.matrix();
+        YAML::Node pose_utm;
+        for (int i = 0; i < 16; ++i)
+        {
+            int row = i / 4;
+            int col = i % 4;
+            pose_utm.push_back(static_cast<long double>(matrix(row, col)));
+        }
+        root["pose_utm"] = pose_utm;
+
+        YAML::Node offset_utm;
+        offset_utm.push_back(static_cast<long double>(pose.offset_utm(0)));
+        offset_utm.push_back(static_cast<long double>(pose.offset_utm(1)));
+        offset_utm.push_back(static_cast<long double>(pose.offset_utm(2)));
+        root["offset_utm"] = offset_utm;
+
+        std::ofstream fout(yaml_file);
+        if (!fout)
+        {
+            std::cerr << "Error opening YAML file for writing: " << yaml_file << std::endl;
+            return false;
+        }
+
+        fout << root;
+        fout.close();
+        return true;
+    }
+    catch (const std::exception &e)
+    {
+        std::cerr << "Error writing YAML file " << yaml_file << ": " << e.what() << std::endl;
+        return false;
+    }
+}
 
 
 // Function to read timestamps from TUM file

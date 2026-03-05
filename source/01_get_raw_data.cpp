@@ -16,9 +16,6 @@
 #include <algorithm>
 #include <Eigen/Dense>
 #include <Eigen/Geometry>
-#include <GeographicLib/UTMUPS.hpp>
-#include <GeographicLib/Geocentric.hpp>
-#include <GeographicLib/LocalCartesian.hpp>
 
 #include <chcnav/hcinspvatzcb.h>
 
@@ -29,37 +26,11 @@
 #include <pcl/point_cloud.h>
 
 #include <yaml-cpp/yaml.h>
-#include "common.hpp"
 
 #include <opencv2/opencv.hpp>
 
+#include "common.hpp"
 #include "common_func.cpp"
-
-struct LidarData {
-  double timestamp;
-};
-
-// Local ENU converter using GeographicLib::LocalCartesian
-struct ENUConverter {
-  bool initialized = false;
-  double lat0 = 0.0, lon0 = 0.0, h0 = 0.0;
-  std::unique_ptr<GeographicLib::LocalCartesian> proj;
-
-  void init(double lat_ref, double lon_ref, double h_ref) {
-    lat0 = lat_ref; lon0 = lon_ref; h0 = h_ref;
-    proj.reset(new GeographicLib::LocalCartesian(lat0, lon0, h0));
-    initialized = true;
-    ROS_INFO("LocalCartesian ENU initialized at lat=%.8f lon=%.8f h=%.3f", lat0, lon0, h0);
-  }
-
-  // convert lat/lon/alt -> ENU (x east, y north, z up)
-  void convertToENU(double lat, double lon, double alt, double &x, double &y, double &z) {
-    if (!initialized) {
-      init(lat, lon, alt);
-    }
-    proj->Forward(lat, lon, alt, x, y, z);
-  }
-};
 
 
 static inline Eigen::Quaterniond rpyDegToQuat(double roll_deg, double pitch_deg, double yaw_deg) {
@@ -148,8 +119,7 @@ std::map<double, int> get_key_frames_timestamps(std::vector<TumPose>& enu_poses)
 
 // 将lidar_times中每个时间戳与enu_poses最近的元素配对，结果存入key_lidar_poses_at_enu
 // ! try 恢复之前 小于 0.05s 的时间差阈值，避免错误配对      
-         // double dt = fabs(gnss_queue.front().timestamp - lidar_queue.front().timestamp);
-        // if (dt < 0.005) {
+
 void get_lidar_time_pose_pairs(const std::vector<double>& lidar_times, const std::vector<TumPose>& enu_poses, std::vector<TumPose>& key_lidar_poses_at_enu) {
   key_lidar_poses_at_enu.clear();
   if (enu_poses.empty()) return;
@@ -365,7 +335,7 @@ int main(int argc, char **argv)
 {
   // 队列和同步
   std::deque<GnssOdomData> gnss_queue;
-  std::deque<LidarData> lidar_queue;
+
   std::condition_variable cv;
   bool finished = false;
 
@@ -600,34 +570,7 @@ int main(int argc, char **argv)
   f.close();
   ROS_INFO("Wrote %zu GNSS poses to %s", key_lidar_poses_at_enu.size(), gnss_enu.c_str());
 
-  // Write ENU origin (lat, lon, alt and ENU origin coordinates) in YAML format
-  YAML::Node node;
-  if (!utm_offset.empty() && enu.initialized)
-  {
-    node["lat"] = enu.lat0;
-    node["lon"] = enu.lon0;
-    node["alt"] = enu.h0;
-
-    double utm_x, utm_y;
-    int utm_zone = 0;
-    bool utm_northp = true;
-    GeographicLib::UTMUPS::Forward(enu.lat0, enu.lon0, utm_zone, utm_northp, utm_x, utm_y);
-
-    node["utm_offset"]["x"] = utm_x;
-    node["utm_offset"]["y"] = utm_y;
-    node["utm_offset"]["alt"] = enu.h0;
-    node["utm_offset"]["zone"] = utm_zone;
-    node["utm_offset"]["northp"] = utm_northp;
-
-    std::ofstream(utm_offset) << node;
-    ROS_INFO("Wrote ENU origin to %s (with UTM)", utm_offset.c_str());
-  }
-  else
-  {
-    node["error"] = "ENU origin not initialized ";
-    ROS_ERROR("Wrote ENU origin to %s (with UTM) Failed ...... ", utm_offset.c_str());
-    std::ofstream(utm_offset) << node;
-  }
+  write_enu_origin_yaml(enu, utm_offset);
  
   return 0;
 }
