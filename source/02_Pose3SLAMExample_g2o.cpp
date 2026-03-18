@@ -740,7 +740,8 @@ void addLoopToGraph(NonlinearFactorGraph &graph,
             // 策略: loop约束应该强于odom，这样才能修正累积漂移造成的重影
             
             double var_trans, var_rot;
-            if (fitness < 0.5) {
+            // if (fitness < 0.5) {
+            if (1) {
                 // 优质匹配: 强约束，可信赖，用于消除重影
                 var_trans = loop_config.var_trans;   // 从配置读取
                 var_rot = loop_config.var_rot;    // 从配置读取
@@ -749,9 +750,9 @@ void addLoopToGraph(NonlinearFactorGraph &graph,
                 // var_trans = 2 * loop_config.var_trans;   // 从配置读取
                 // var_rot = 2 * loop_config.var_rot;    // 从配置读取
                 // 一般匹配: 中等约束，基于fitness动态调整
-                var_trans = std::max(2.0, fitness );  
+                var_trans = std::max(2.0, fitness);  
                 var_rot = std::max(0.1, fitness * 0.1);
-                var_trans = std::min(var_trans, 0.10);  // 最大10m
+                var_trans = std::min(var_trans, 0.10);  // 最大10cm
                 var_rot = std::min(var_rot, 0.005);       // 最大0.5rad
                 std::cout << "⚠️  Normal quality loop (fitness=" << fitness << ") - Medium constraint" << std::endl;
             }
@@ -759,7 +760,7 @@ void addLoopToGraph(NonlinearFactorGraph &graph,
             var_trans = var_trans * var_trans;
             var_rot = var_rot * var_rot;
 
-            gtsam::Vector variances = (gtsam::Vector(6) << var_rot, var_rot, var_rot, var_trans, var_trans, var_trans).finished();
+            gtsam::Vector variances = (gtsam::Vector(6) << var_rot, var_rot, var_rot, var_trans, var_trans, var_trans/4).finished();
             auto noise = noiseModel::Diagonal::Variances(variances);
             graph.add( BetweenFactor<Pose3>(ki, kj, meas, noise) );
             std::cout << "Added loop constraint between " << ki << " and " << kj 
@@ -916,9 +917,9 @@ void save_map_grid(std::string tile_output_dir, const cloud_ptr &transformedClou
 int main(int argc, char **argv)
 {
     // Initialize ROS for parameter reading
-    ros::init(argc, argv, "pose3_slam_g2o");
-    ros::NodeHandle nh;
-    ros::NodeHandle pnh("~");
+    // ros::init(argc, argv, "pose3_slam_g2o");
+    // ros::NodeHandle nh;
+    // ros::NodeHandle pnh("~");
 
     // Load YAML configuration file
     std::string config_file = "/home/xf/Desktop/catkin_ws/src/HBA/rviz_cfg/config.yaml";
@@ -1006,7 +1007,7 @@ int main(int argc, char **argv)
         }
         // Add prior factor every 100 poses
         // else {
-        else if (i % 50 == 0) {
+        else if (i % 20 == 0) {
             gtsam::Vector priorVars100 = (gtsam::Vector(6) << 1e4, 1e4, 1e4, 4e-4, 4e-4, 9e-4).finished();
             auto priorNoise100 = noiseModel::Diagonal::Variances(priorVars100);
             graph.add(PriorFactor<Pose3>(key, curr, priorNoise100));
@@ -1104,7 +1105,7 @@ int main(int argc, char **argv)
         std::cout << "==========================================\n" << std::endl;
     }
     
-    // addLoopToGraph(graph, initial, key_frame_timestamps , pointclouds_path, loop_config);
+    addLoopToGraph(graph, initial, key_frame_timestamps , pointclouds_path, loop_config);
 
     // exit (0);
  

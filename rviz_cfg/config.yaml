@@ -1,7 +1,7 @@
 # 配置参数示例
 # bag_path: /home/xf/Desktop/catkin_ws/data/1028_3.bag
-# bag_path: //media/xf/Elements/id4_1202/20251220_1.bag
-bag_path: /media/xf/Elements/id4_1202/bag1/20251220_3/cam_all_2025-12-20-11-01-43_0.bag
+# bag_path: /media/xf/Elements/id4_1202/bag1/20251220_1/cam_all_2025-12-02-14-26-41_2.bag
+bag_path: /media/xf/Elements/id4_1202/bag1/20251220_3.bag
 gnss_topic: /chcnav/devpvt
 # lidar_topic: /lidar_points
 lidar_topic: /hesai/pandar_points 
@@ -9,7 +9,7 @@ lidar_topic: /hesai/pandar_points
 # File paths and working directory
 paths:
   # work_dir: "/home/xf/Desktop/catkin_ws/data/test_id4/"
-  work_dir: "/media/xf/Elements/id4_1202/20251220_3/"
+  work_dir: "/media/xf/Elements/id4_1202/raw_data_20251220_3/"
 
 # Configuration file for Pose3SLAMExample_g2o
 
@@ -42,14 +42,14 @@ optimization:
 noise:
   # Odometry noise model (BetweenFactor)
   odometry:
-    rotation_std: 0.001          # Rotation standard deviation (radians)
-    translation_std_xy: 0.03     # XY translation standard deviation (meters)
-    translation_std_z: 0.05       # Z translation standard deviation (meters)
+    rotation_std: 0.01          # Rotation standard deviation (radians)
+    translation_std_xy: 0.02     # XY translation standard deviation (meters)
+    translation_std_z: 0.01       # Z translation standard deviation (meters)
   
   # GNSS prior noise model
   gnss:
-    position_std_xy: 0.1       # GNSS horizontal position std (meters)
-    position_std_z: 0.15        # GNSS vertical position std (meters)
+    position_std_xy: 0.05       # GNSS horizontal position std (meters)
+    position_std_z: 0.1        # GNSS vertical position std (meters)
     gnss_prior_multiplier: 100  # Multiplier for GNSS prior variance
     gnss_prior_interval: 100    # Add GNSS prior every N frames (0 to disable)
 
@@ -65,15 +65,15 @@ loop_closure:
   
   # Loop noise model
   noise:
-    var_trans: 0.10            # Translation variance for good loops
+    var_trans: 0.010            # Translation variance for good loops
     var_rot: 0.002              # Rotation variance for good loops
   
   # Loop search range
   search:
     start_index: 0              # Start index for loop search
     end_index: 20000             # End index for loop search
-    step: 2                     # Step size for loop search
-    min_key_diff: 20            # Minimum key difference to consider
+    step: 1                     # Step size for loop search
+    min_key_diff: 5            # Minimum key difference to consider
   
   # Loop file saving/loading
   save_loop_g2o: true           # Save loop closures to g2o file

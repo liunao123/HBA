@@ -32,6 +32,17 @@
 #include "common.hpp"
 #include "common_func.cpp"
 
+// 用于记录已保存的odom时间戳
+#include <unordered_set>
+#include <map>
+#include <limits>
+static std::unordered_set<double> g_saved_odom_ts;
+static std::string g_work_dir = ".";
+
+// ! 关键帧参数
+const float THRESH_DISTENT = 2.0;
+const float THRESH_YAW_DEGREE = 10.0;
+
 
 static inline Eigen::Quaterniond rpyDegToQuat(double roll_deg, double pitch_deg, double yaw_deg) {
   const double r = roll_deg * M_PI / 180.0;
@@ -46,12 +57,7 @@ static inline Eigen::Quaterniond rpyDegToQuat(double roll_deg, double pitch_deg,
 }
 
 
-// 用于记录已保存的odom时间戳
-#include <unordered_set>
-#include <map>
-#include <limits>
-static std::unordered_set<double> g_saved_odom_ts;
-static std::string g_work_dir = ".";
+
 
 // 用于记录所有odom和点云的配对关系
 static std::map<double, int> key_frame_map; // lidar_ts -> odom_ts
@@ -100,7 +106,7 @@ std::map<double, int> get_key_frames_timestamps(std::vector<TumPose>& enu_poses)
     double dist = (position - last_position).norm();
     double dyaw = std::fabs(curr_yaw - last_yaw);
     if (dyaw > 180.0) dyaw = 360.0 - dyaw;
-    if (dist > 1.0 || dyaw > 10.0) {
+    if (dist > THRESH_DISTENT || dyaw > THRESH_YAW_DEGREE) {
       double ts = tp.timestamp;
       ts2id[ts] = id++;
       key_indices.push_back(i);
@@ -313,7 +319,8 @@ void save_pointcloud_to_pcd_with_undistort(const sensor_msgs::PointCloud2 &pc_ms
   // }
 
   // 保存去畸变点云
-  if (pcl::io::savePCDFile(filename, undistorted) == 0)
+  // if (pcl::io::savePCDFileASCII(filename, undistorted) == 0)
+  if (pcl::io::savePCDFileBinary(filename, undistorted) == 0)
   {
     std::cout << " NOTE [PCD] Saved (undistorted): " << filename << std::endl;
   }
@@ -415,10 +422,10 @@ int main(int argc, char **argv)
   int count_gnss = 0;
   for (const rosbag::MessageInstance &m : view) {
     count_gnss++;
-    if (count_gnss > 2500)
-    {
-      break;
-    }
+    // if (count_gnss > 2500)
+    // {
+    //   break;
+    // }
     std::cout << "Processing message #" << count_gnss << "\r" << std::flush;
     
     if (m.getTopic() == gnss_topic) {
@@ -470,13 +477,13 @@ int main(int argc, char **argv)
   bag2.open(bag_path, rosbag::bagmode::Read);
   rosbag::View view2(bag2);
 
-  count_gnss = 0;
+  // count_gnss = 0;
   for (const rosbag::MessageInstance &m : view2) {
-    count_gnss++;
-    if (count_gnss > 3000)
-    {
-      break;
-    }
+    // count_gnss++;
+    // if (count_gnss > 3000)
+    // {
+    //   break;
+    // }
     if (m.getTopic() == gnss_topic) {
       // 已经在第一轮处理过了，这里跳过
       continue;
@@ -510,12 +517,14 @@ int main(int argc, char **argv)
       create_dir_if_not_exists(dir);
 
       std::ostringstream oss;
+      // ! jpg 更小
+      // oss << dir << img_id << "_" << std::fixed << std::setprecision(3) << id_ts << ".png";
       oss << dir << img_id << "_" << std::fixed << std::setprecision(3) << id_ts << ".jpg";
       std::string filename = oss.str();
       // 转换为cv::Mat并保存
       try {
         cv::Mat mat;
-        // std::cerr << "[Image549] img->encoding: " << img->encoding << std::endl;
+        // std::cout << "[Image518] img->encoding: " << img->encoding << std::endl;
         if (img->encoding == "rgb8" || img->encoding == "bgr8") {
           mat = cv::Mat(img->height, img->width, img->encoding == "rgb8" ? CV_8UC3 : CV_8UC3, const_cast<uchar*>(&img->data[0]), img->step);
           if (img->encoding == "rgb8") {
