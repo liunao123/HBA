@@ -38,16 +38,15 @@ find_package(catkin REQUIRED COMPONENTS
 )
 find_package(OpenCV REQUIRED)
 
-# ROS (Noetic) is typically built against the system PCL. If another PCL is
-# installed under /usr/local, mixing them can cause ABI conflicts.
-# Force using the system PCLConfig.cmake from /usr/lib to keep dependencies consistent.
-# if (EXISTS "/usr/lib/x86_64-linux-gnu/cmake/pcl/PCLConfig.cmake")
-#   set(PCL_DIR "/usr/lib/x86_64-linux-gnu/cmake/pcl" CACHE PATH "PCL CMake config directory" FORCE)
-# endif()
+# Force PCL 1.15 from /usr/local to avoid mixing with system PCL 1.12.
+if (EXISTS "/usr/local/share/pcl-1.15/PCLConfig.cmake")
+  set(PCL_DIR "/usr/local/share/pcl-1.15" CACHE PATH "PCL CMake config directory" FORCE)
+endif()
 
 
 # 02_Pose3SLAMExample_g2o 需要PCL 1.15，否则编译没问题，运行会崩溃
 find_package(PCL 1.15 REQUIRED) 
+# find_package(PCL  REQUIRED) 
 
 
 # find_package(PCL REQUIRED)
@@ -113,7 +112,7 @@ include_directories(
   ${YAML_CPP_INCLUDE_DIRS}
 )
 
-link_directories(/usr/lib/x86_64-linux-gnu)
+link_directories(/usr/local/lib)
 
 catkin_package(
   CATKIN_DEPENDS geometry_msgs nav_msgs roscpp rospy std_msgs visualization_msgs tf
@@ -148,16 +147,6 @@ target_link_libraries(01_get_raw_data
   yaml-cpp
 )
 
-# add_executable(01_get_raw_data_img source/01_get_raw_data_img.cpp)
-# target_link_libraries(01_get_raw_data_img
-#   ${catkin_LIBRARIES}
-#   ${PCL_LIBRARIES}
-#   ${GeographicLib_LIBRARIES}
-#   ${OpenCV_LIBRARIES}
-#   ${GDAL_LIBRARIES}
-#   Geographic
-#   yaml-cpp
-# )
 
 add_executable(02_Pose3SLAMExample_g2o source/02_Pose3SLAMExample_g2o.cpp)
 target_link_libraries(02_Pose3SLAMExample_g2o
@@ -239,22 +228,39 @@ target_link_libraries(visualize_with_pose_pcd ${catkin_LIBRARIES} ${PCL_LIBRARIE
 # target_link_libraries(odom2posegraph_keyframe ${catkin_LIBRARIES}  ${PCL_LIBRARIES} )
 
 # Add executable for testing SensorExtrinsics
-add_executable(test_sensor_extrinsics source/sensor_extrinsics.cpp)
-target_link_libraries(test_sensor_extrinsics
+add_executable(test_sensor_extrinsics_ros source/sensor_extrinsics_ros.cpp)
+target_link_libraries(test_sensor_extrinsics_ros
   ${catkin_LIBRARIES}
   Eigen3::Eigen
   yaml-cpp
 )
 
+# add_executable(get_session_data_and_NonUniformSampling source/get_session_data_and_NonUniformSampling.cpp)
+# target_link_libraries(get_session_data_and_NonUniformSampling
+#   ${catkin_LIBRARIES}
+#   ${OpenCV_LIBRARIES}
+#   ${PCL_LIBRARIES}
+#   ${GDAL_LIBRARIES}
+#   Eigen3::Eigen
+#   yaml-cpp
+#   Geographic
+# )
 
-add_executable(sensor source/sensor.cpp)
-target_link_libraries(sensor
+# pcl1.15 只能有一个版本
+add_executable(03_GetRgbAndNonuniformSample source/03_GetRgbAndNonuniformSample.cpp)
+target_link_libraries(03_GetRgbAndNonuniformSample
   ${catkin_LIBRARIES}
   ${OpenCV_LIBRARIES}
   ${PCL_LIBRARIES}
   ${GDAL_LIBRARIES}
   Eigen3::Eigen
   yaml-cpp
+  Geographic
+)
+target_link_directories(03_GetRgbAndNonuniformSample PRIVATE /usr/local/lib)
+set_target_properties(03_GetRgbAndNonuniformSample PROPERTIES
+  BUILD_RPATH "/usr/local/lib"
+  INSTALL_RPATH "/usr/local/lib"
 )
 
 # Ensure the include directories are added

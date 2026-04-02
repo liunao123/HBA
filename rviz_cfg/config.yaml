@@ -1,15 +1,15 @@
 # 配置参数示例
 # bag_path: /home/xf/Desktop/catkin_ws/data/1028_3.bag
 # bag_path: /media/xf/Elements/id4_1202/bag1/20251220_1/cam_all_2025-12-02-14-26-41_2.bag
-bag_path: /media/xf/Elements/id4_1202/bag1/20251220_3.bag
+bag_path: /media/xf/Elements/id4_1202/bag1/20251220_1.bag
 gnss_topic: /chcnav/devpvt
 # lidar_topic: /lidar_points
 lidar_topic: /hesai/pandar_points 
 
 # File paths and working directory
 paths:
-  # work_dir: "/home/xf/Desktop/catkin_ws/data/test_id4/"
-  work_dir: "/media/xf/Elements/id4_1202/raw_data_20251220_3/"
+  work_dir: "/home/xf/Desktop/catkin_ws/data/raw_data_20251220_1/"
+  # work_dir: "/media/xf/Elements/id4_1202/raw_data_20251220_1/"
 
 # Configuration file for Pose3SLAMExample_g2o
 
@@ -44,7 +44,7 @@ noise:
   odometry:
     rotation_std: 0.01          # Rotation standard deviation (radians)
     translation_std_xy: 0.02     # XY translation standard deviation (meters)
-    translation_std_z: 0.01       # Z translation standard deviation (meters)
+    translation_std_z: 0.04       # Z translation standard deviation (meters)
   
   # GNSS prior noise model
   gnss:
@@ -65,7 +65,7 @@ loop_closure:
   
   # Loop noise model
   noise:
-    var_trans: 0.010            # Translation variance for good loops
+    var_trans: 0.0010            # Translation variance for good loops
     var_rot: 0.002              # Rotation variance for good loops
   
   # Loop search range
@@ -77,7 +77,7 @@ loop_closure:
   
   # Loop file saving/loading
   save_loop_g2o: true           # Save loop closures to g2o file
-  load_loop_g2o: false          # Load loop closures from g2o file
+  load_loop_g2o: true          # Load loop closures from g2o file
 
 # GICP parameters
 gicp:
@@ -91,7 +91,7 @@ gicp:
 
 # Key frame extraction parameters
 keyframe:
-  min_distance: 1.0             # Minimum distance between keyframes (meters)
+  min_distance: 2.0             # Minimum distance between keyframes (meters)
   min_yaw_deg: 5.0              # Minimum yaw change between keyframes (degrees)
 
 # GICP transform validation

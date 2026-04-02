@@ -152,7 +152,51 @@ std::vector<std::string> collect_frame_timestamps(const std::string &pcd_root)
                 continue;
             frames.push_back(path.stem().string());
         }
-        std::sort(frames.begin(), frames.end());
+
+		struct FrameInfo
+		{
+			std::string name;
+			double timestamp;
+			bool has_timestamp;
+		};
+
+		std::vector<FrameInfo> frame_info;
+		frame_info.reserve(frames.size());
+
+		for (const auto &frame : frames)
+		{
+			FrameInfo info{frame, 0.0, false};
+			const auto separator_pos = frame.find_last_of('_');
+			if (separator_pos != std::string::npos && separator_pos + 1 < frame.size())
+			{
+				const auto timestamp_str = frame.substr(separator_pos + 1);
+				try
+				{
+					info.timestamp = std::stod(timestamp_str);
+					info.has_timestamp = true;
+				}
+				catch (const std::exception &)
+				{
+					// Leave has_timestamp as false and fall back to lexical ordering
+				}
+			}
+			frame_info.push_back(info);
+		}
+
+		std::sort(frame_info.begin(), frame_info.end(), [](const FrameInfo &lhs, const FrameInfo &rhs) {
+			if (lhs.has_timestamp && rhs.has_timestamp)
+				return lhs.timestamp < rhs.timestamp;
+			if (lhs.has_timestamp != rhs.has_timestamp)
+				return lhs.has_timestamp; // Valid timestamps should come first
+			return lhs.name < rhs.name;
+		});
+
+		frames.clear();
+		frames.reserve(frame_info.size());
+		for (const auto &info : frame_info)
+		{
+			frames.push_back(info.name);
+		}
     }
     catch (const std::exception &e)
     {

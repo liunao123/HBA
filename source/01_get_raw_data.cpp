@@ -350,6 +350,7 @@ int main(int argc, char **argv)
   std::string config_file = "/home/xf/Desktop/catkin_ws/src/HBA/rviz_cfg/config.yaml";
 
   if (argc > 1) config_file = argv[1];
+  std::cout << "try load config file: " << config_file << std::endl;
   YAML::Node config;
   try {
     config = YAML::LoadFile(config_file);

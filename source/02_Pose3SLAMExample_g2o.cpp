@@ -972,14 +972,7 @@ int main(int argc, char **argv)
     std::vector<TumPose> lidar_poses = GetLidarPoseOnWorld(gnss_odom_data, extrinsic);
 
     // 新增：允许通过指定TUM文件直接读取相邻帧的位姿作为里程计约束，跳过GICP
-    std::string tum_odom_file =  work_dir + "/debug_file/opt_pose_enu1.tum";
-
-    // if (config["odom_tum_file"]) {
-    //     tum_odom_file = config["odom_tum_file"].as<std::string>("");
-    // }
-    // if (argc > 3) {
-    //     tum_odom_file = argv[3];
-    // }
+    std::string tum_odom_file =  work_dir + "/debug_file/opt_pose_enu.tum";
 
     // Build graph and initial estimate from TUM poses
     NonlinearFactorGraph graph;
@@ -1028,11 +1021,10 @@ int main(int argc, char **argv)
                                                    gicp_trans_std_z * gicp_trans_std_z).finished();
     auto gicpNoise = noiseModel::Diagonal::Variances(gicpVars);
 
-    // if (!tum_odom_file.empty()) {
-    if (0) {
+    if ( load_loop_g2o ) {
         // 直接从TUM文件读取相邻帧的位姿，构建里程计约束
         std::cout << "[INFO] Using TUM file for odometry constraints: " << tum_odom_file << std::endl;
-        std::vector<TumPose> tum_odoms = readTumPose(tum_odom_file );
+        std::vector<TumPose> tum_odoms = readTumPose( tum_odom_file );
         if (tum_odoms.size() < 2) {
             std::cerr << "[ERROR] Not enough poses in TUM file for odometry constraints." << std::endl;
             return -1;
