@@ -140,92 +140,146 @@ public:
         const float y_range = maxPt.y - minPt.y;
         const float z_range = maxPt.z - minPt.z;
 
-        const int grid_x_num = std::max(1, static_cast<int>(std::ceil(x_range / octree_resolution_)));
-        const int grid_y_num = std::max(1, static_cast<int>(std::ceil(y_range / octree_resolution_)));
-        const int grid_z_num = std::max(1, static_cast<int>(std::ceil(z_range / octree_resolution_)));
+        const int grid_x = std::max(1, static_cast<int>(std::ceil(x_range / octree_resolution_)));
+        const int grid_y = std::max(1, static_cast<int>(std::ceil(y_range / octree_resolution_)));
+        const int grid_z = std::max(1, static_cast<int>(std::ceil(z_range / octree_resolution_)));
 
-        struct OctreeNode {
-            CloudPtr cloud;
-            float cx = 0.0f;
-            float cy = 0.0f;
-            float cz = 0.0f;
-            bool has_pose = false;
-            float min_pose_dist = FLT_MAX;
-
-            OctreeNode() : cloud(new CloudT) {}
+        // ── Step 1: scan points once, build per-node metadata (no point copying) ──
+        // 旧方案将所有点复制进 per-node CloudPtr，对 500M 点会导致内存翻倍 OOM。
+        // 新方案只记录每个 octree cell 的中心坐标和 voxel_size，不存任何点。
+        struct NodeMeta {
+            float cx, cy, cz;
+            float voxel_size = 0.0f;
+            bool  has_pose   = false;
         };
 
-        std::unordered_map<int, OctreeNode> octree_nodes;
-        octree_nodes.reserve(std::max<size_t>(1, raw_unified_cloud_->size() / 1024));
-
-        for (const auto& point : raw_unified_cloud_->points) {
-            const int gx = std::clamp(static_cast<int>((point.x - minPt.x) / octree_resolution_), 0, grid_x_num - 1);
-            const int gy = std::clamp(static_cast<int>((point.y - minPt.y) / octree_resolution_), 0, grid_y_num - 1);
-            const int gz = std::clamp(static_cast<int>((point.z - minPt.z) / octree_resolution_), 0, grid_z_num - 1);
-            const int idx = gz * grid_x_num * grid_y_num + gy * grid_x_num + gx;
-
-            OctreeNode& node = octree_nodes[idx];
-            if (node.cloud->empty()) {
-                node.cx = minPt.x + (gx + 0.5f) * octree_resolution_;
-                node.cy = minPt.y + (gy + 0.5f) * octree_resolution_;
-                node.cz = minPt.z + (gz + 0.5f) * octree_resolution_;
-            }
-            node.cloud->push_back(point);
+        std::unordered_map<int32_t, NodeMeta> node_meta;
+        {
+            // 预估节点数上限，防止 overflow
+            const size_t est = std::min(
+                static_cast<size_t>(grid_x) * grid_y * grid_z / 2 + 16,
+                static_cast<size_t>(4 * 1024 * 1024));
+            node_meta.reserve(est);
         }
 
-        for (auto& kv : octree_nodes) {
-            auto& node = kv.second;
-            node.has_pose = false;
-            node.min_pose_dist = FLT_MAX;
+        const size_t N = raw_unified_cloud_->size();
+        std::cout << "  [executeFiltering] Pass 1/2: node metadata (" << N << " pts)..." << std::flush;
 
-            for (const auto& pose_pos : pose_positions_unified_) {
-                const float dx = static_cast<float>(pose_pos.x()) - node.cx;
-                const float dy = static_cast<float>(pose_pos.y()) - node.cy;
-                const float dist = std::sqrt(dx * dx + dy * dy);
-                node.min_pose_dist = std::min(node.min_pose_dist, dist);
+        for (size_t pi = 0; pi < N; ++pi) {
+            const auto& pt = raw_unified_cloud_->points[pi];
+            const int gx = std::clamp(
+                static_cast<int>((pt.x - minPt.x) / octree_resolution_), 0, grid_x - 1);
+            const int gy = std::clamp(
+                static_cast<int>((pt.y - minPt.y) / octree_resolution_), 0, grid_y - 1);
+            const int gz = std::clamp(
+                static_cast<int>((pt.z - minPt.z) / octree_resolution_), 0, grid_z - 1);
+            const int32_t nid = gz * grid_x * grid_y + gy * grid_x + gx;
 
-                const float half_res = octree_resolution_ * 0.5f;
-                if (std::abs(dx) <= half_res && std::abs(dy) <= half_res) {
-                    node.has_pose = true;
-                }
+            if (!node_meta.count(nid)) {
+                NodeMeta nm;
+                nm.cx = minPt.x + (gx + 0.5f) * octree_resolution_;
+                nm.cy = minPt.y + (gy + 0.5f) * octree_resolution_;
+                nm.cz = minPt.z + (gz + 0.5f) * octree_resolution_;
+                nm.voxel_size = adaptive_voxel_params_.back().second;
+                node_meta.emplace(nid, nm);
             }
         }
+        std::cout << " done. nodes=" << node_meta.size() << "\n";
 
-        for (const auto& kv : octree_nodes) {
-            const auto& node = kv.second;
-            if (node.cloud->empty()) {
-                continue;
+        // 根据到最近轨迹点的距离，为每个节点确定 voxel_size
+        const float half_res = octree_resolution_ * 0.5f;
+        for (auto& kv : node_meta) {
+            NodeMeta& nm = kv.second;
+            float min_dist = FLT_MAX;
+            for (const auto& pp : pose_positions_unified_) {
+                const float dx = static_cast<float>(pp.x()) - nm.cx;
+                const float dy = static_cast<float>(pp.y()) - nm.cy;
+                const float d  = std::sqrt(dx * dx + dy * dy);
+                if (d < min_dist) min_dist = d;
+                if (std::abs(dx) <= half_res && std::abs(dy) <= half_res)
+                    nm.has_pose = true;
             }
-
-            float voxel_size = adaptive_voxel_params_.back().second;
-            if (node.has_pose) {
-                voxel_size = adaptive_voxel_params_[0].second;
+            if (nm.has_pose) {
+                nm.voxel_size = adaptive_voxel_params_[0].second;
             } else {
                 for (size_t i = 1; i < adaptive_voxel_params_.size(); ++i) {
-                    if (node.min_pose_dist < adaptive_voxel_params_[i].first) {
-                        voxel_size = adaptive_voxel_params_[i].second;
+                    if (min_dist < adaptive_voxel_params_[i].first) {
+                        nm.voxel_size = adaptive_voxel_params_[i].second;
                         break;
                     }
                 }
             }
-
-            CloudT filtered_node;
-            pcl::VoxelGrid<PointT> vg;
-            vg.setInputCloud(node.cloud);
-            vg.setLeafSize(voxel_size, voxel_size, voxel_size);
-            vg.filter(filtered_node);
-            if (node.has_pose && filtered_node.size() < 20)
-            {
-                continue;
-            }
-            
-            *filtered_cloud_ += filtered_node;
         }
 
-        filtered_cloud_->width = static_cast<uint32_t>(filtered_cloud_->size());
+        // ── Step 2: 直接流式 voxel 哈希，无任何中间 per-node 点云 ─────────────
+        // Key = (node_id, global_vx, global_vy, global_vz at local voxel_size)
+        // 每个 voxel 只保留第一个遇到的点（等价于 VoxelGrid 的 centroid 近似）
+        struct VoxelKey {
+            int32_t nid, vx, vy, vz;
+            bool operator==(const VoxelKey& o) const {
+                return nid == o.nid && vx == o.vx && vy == o.vy && vz == o.vz;
+            }
+        };
+        struct VoxelHash {
+            size_t operator()(const VoxelKey& k) const noexcept {
+                uint64_t h  = static_cast<uint64_t>(static_cast<uint32_t>(k.nid)) * 2654435761ULL;
+                         h ^= static_cast<uint64_t>(static_cast<uint32_t>(k.vx))  * 2246822519ULL;
+                         h ^= static_cast<uint64_t>(static_cast<uint32_t>(k.vy))  * 3266489917ULL;
+                         h ^= static_cast<uint64_t>(static_cast<uint32_t>(k.vz))  *  668265263ULL;
+                return static_cast<size_t>(h ^ (h >> 32));
+            }
+        };
+
+        std::unordered_map<VoxelKey, PointT, VoxelHash> voxel_map;
+        voxel_map.reserve(1 << 20);  // 初始 1M buckets，按需自动扩容
+
+        // 记录每个节点的输出点数，供 has_pose && size<20 过滤使用
+        std::unordered_map<int32_t, uint32_t> node_out_count;
+        node_out_count.reserve(node_meta.size());
+
+        std::cout << "  [executeFiltering] Pass 2/2: voxel hashing..." << std::flush;
+        const size_t step = std::max<size_t>(1, N / 20);  // 每 5% 打印一次进度
+
+        for (size_t pi = 0; pi < N; ++pi) {
+            if (pi % step == 0)
+                std::cout << " " << pi * 100 / N << "%" << std::flush;
+
+            const auto& pt = raw_unified_cloud_->points[pi];
+            const int gx = std::clamp(
+                static_cast<int>((pt.x - minPt.x) / octree_resolution_), 0, grid_x - 1);
+            const int gy = std::clamp(
+                static_cast<int>((pt.y - minPt.y) / octree_resolution_), 0, grid_y - 1);
+            const int gz = std::clamp(
+                static_cast<int>((pt.z - minPt.z) / octree_resolution_), 0, grid_z - 1);
+            const int32_t nid = gz * grid_x * grid_y + gy * grid_x + gx;
+
+            const auto mit = node_meta.find(nid);
+            if (mit == node_meta.end()) continue;
+            const float vs = mit->second.voxel_size;
+
+            VoxelKey key{nid,
+                static_cast<int32_t>(std::floor(pt.x / vs)),
+                static_cast<int32_t>(std::floor(pt.y / vs)),
+                static_cast<int32_t>(std::floor(pt.z / vs))};
+
+            auto [it, inserted] = voxel_map.emplace(key, pt);
+            if (inserted) ++node_out_count[nid];
+        }
+        std::cout << " done. output_voxels=" << voxel_map.size() << "\n";
+
+        // 收集结果，保留 has_pose && size<20 过滤逻辑
+        filtered_cloud_->reserve(voxel_map.size());
+        for (auto& [key, point] : voxel_map) {
+            const NodeMeta& nm = node_meta.at(key.nid);
+            if (nm.has_pose && node_out_count[key.nid] < 20) continue;
+            filtered_cloud_->push_back(std::move(point));
+        }
+
+        filtered_cloud_->width  = static_cast<uint32_t>(filtered_cloud_->size());
         filtered_cloud_->height = 1;
         filtered_cloud_->is_dense = true;
-        std::cout << "Filtered cloud has " << filtered_cloud_->size() << " points after adaptive voxel filtering." << std::endl;
+        std::cout << "Filtered cloud has " << filtered_cloud_->size()
+                  << " points after adaptive voxel filtering." << std::endl;
         return filtered_cloud_;
     }
 

@@ -69,10 +69,6 @@ extern float g_min_z;
 extern float g_max_z;
 extern float g_voxel_size;
 
-// GICP validation parameters
-extern float g_max_trans_diff;
-extern float g_max_rot_diff;
-
 // GICP parameters
 extern int g_gicp_correspondence_randomness;
 extern float g_gicp_max_correspondence_distance;
@@ -86,26 +82,12 @@ struct NoiseConfig {
     double odom_rot_std;
     double odom_trans_std_xy;
     double odom_trans_std_z;
-    double gnss_position_std_xy;
-    double gnss_position_std_z;
-    double gnss_prior_multiplier;
-    int gnss_prior_interval;
 };
 
 
 struct LoopConfig {
-    double time_thresh;
     double spatial_thresh;
-    double fitness_thresh;
-    double max_fitness_reject;
-    double voxel_size;
     int max_iter;
-    double variance_scale;
-    double var_trans;
-    double var_rot;
-    int start_index;
-    int end_index;
-    int step;
     int min_key_diff;
 };
 
@@ -558,15 +540,10 @@ inline std::vector<TumPose> GetLidarPoseOnWorld(
 }
 
 // Function to load configuration from YAML file
-// 新版参数顺序，适配Pose3SLAMExample_g2o.cpp
 inline void loadConfigFromYAML(const std::string& config_file,
                                std::string& work_dir,
-                               std::string& optimization_method,
                                NoiseConfig& noise_config,
                                LoopConfig& loop_config,
-                               bool& save_loop_g2o,
-                               bool& load_loop_g2o,
-                               LidarGnssExtrinsic& extrinsic,
                                YAML::Node& config)
 {
     try {
@@ -593,61 +570,26 @@ inline void loadConfigFromYAML(const std::string& config_file,
     g_gicp_rotation_epsilon = config["gicp"]["rotation_epsilon"].as<float>(0.001);
     g_gicp_initial_lambda_factor = config["gicp"]["initial_lambda_factor"].as<float>(1e-9);
 
-    // Load GICP validation parameters
-    g_max_trans_diff = config["gicp_validation"]["max_trans_diff"].as<float>(2.0);
-    g_max_rot_diff = config["gicp_validation"]["max_rot_diff"].as<float>(0.5);
-
     // Load file paths
     work_dir = config["paths"]["work_dir"].as<std::string>("/mnt/nvme0n1p2/data/nongan_m2_1028/");
-
-    // Load optimization parameters
-    optimization_method = config["optimization"]["method"].as<std::string>("ISAM2");
 
     // Load noise model configuration
     noise_config.odom_rot_std = config["noise"]["odometry"]["rotation_std"].as<double>(0.003);
     noise_config.odom_trans_std_xy = config["noise"]["odometry"]["translation_std_xy"].as<double>(0.5);
     noise_config.odom_trans_std_z = config["noise"]["odometry"]["translation_std_z"].as<double>(0.5);
-    noise_config.gnss_position_std_xy = config["noise"]["gnss"]["position_std_xy"].as<double>(0.15);
-    noise_config.gnss_position_std_z = config["noise"]["gnss"]["position_std_z"].as<double>(0.25);
-    noise_config.gnss_prior_multiplier = config["noise"]["gnss"]["gnss_prior_multiplier"].as<double>(100);
-    noise_config.gnss_prior_interval = config["noise"]["gnss"]["gnss_prior_interval"].as<int>(500);
 
     // Load loop closure configuration
-    loop_config.time_thresh = config["loop_closure"]["time_thresh"].as<double>(10.0);
     loop_config.spatial_thresh = config["loop_closure"]["spatial_thresh"].as<double>(10.0);
-    loop_config.fitness_thresh = config["loop_closure"]["fitness_thresh"].as<double>(1.0);
-    loop_config.max_fitness_reject = config["loop_closure"]["max_fitness_reject"].as<double>(50.0);
-    loop_config.voxel_size = config["loop_closure"]["voxel_size"].as<double>(0.1);
     loop_config.max_iter = config["loop_closure"]["max_iter"].as<int>(50);
-    loop_config.variance_scale = config["loop_closure"]["variance_scale"].as<double>(10.0);
-    loop_config.var_trans = config["loop_closure"]["noise"]["var_trans"].as<double>(0.010);
-    loop_config.var_rot = config["loop_closure"]["noise"]["var_rot"].as<double>(0.005);
-    loop_config.start_index = config["loop_closure"]["search"]["start_index"].as<int>(1200);
-    loop_config.end_index = config["loop_closure"]["search"]["end_index"].as<int>(2000);
-    loop_config.step = config["loop_closure"]["search"]["step"].as<int>(5);
-    loop_config.min_key_diff = config["loop_closure"]["search"]["min_key_diff"].as<int>(20);
-
-    save_loop_g2o = config["loop_closure"]["save_loop_g2o"].as<bool>(true);
-    load_loop_g2o = config["loop_closure"]["load_loop_g2o"].as<bool>(false);
-
-    // Load LiDAR-GNSS extrinsic calibration
-    extrinsic.q.w() = config["lidar_gnss_extrinsic"]["quaternion"]["w"].as<double>(1.0);
-    extrinsic.q.x() = config["lidar_gnss_extrinsic"]["quaternion"]["x"].as<double>(0.0);
-    extrinsic.q.y() = config["lidar_gnss_extrinsic"]["quaternion"]["y"].as<double>(0.0);
-    extrinsic.q.z() = config["lidar_gnss_extrinsic"]["quaternion"]["z"].as<double>(0.0);
-    extrinsic.t.x() = config["lidar_gnss_extrinsic"]["translation"]["x"].as<double>(0.0);
-    extrinsic.t.y() = config["lidar_gnss_extrinsic"]["translation"]["y"].as<double>(0.0);
-    extrinsic.t.z() = config["lidar_gnss_extrinsic"]["translation"]["z"].as<double>(0.0);
+    loop_config.min_key_diff = config["loop_closure"]["min_neighbour_key_diff"].as<int>(20);
 
     std::cout << "\n========== Configuration Summary ==========" << std::endl;
     std::cout << "Work directory: " << work_dir << std::endl;
-    std::cout << "Optimization method: " << optimization_method << std::endl;
-    std::cout << "Odometry noise - rot: " << noise_config.odom_rot_std << " trans_xy: " << noise_config.odom_trans_std_xy << std::endl;
-    std::cout << "GNSS noise - xy: " << noise_config.gnss_position_std_xy << " z: " << noise_config.gnss_position_std_z << std::endl;
-    std::cout << "Loop closure - time_thresh: " << loop_config.time_thresh << " spatial: " << loop_config.spatial_thresh << std::endl;
-    std::cout << "LiDAR-GNSS extrinsic - q: [" << extrinsic.q.w() << ", " << extrinsic.q.x() << ", " 
-              << extrinsic.q.y() << ", " << extrinsic.q.z() << "], t: [" 
-              << extrinsic.t.transpose() << "]" << std::endl;
+    std::cout << "Odometry noise - rot: " << noise_config.odom_rot_std
+              << " trans_xy: " << noise_config.odom_trans_std_xy << std::endl;
+    std::cout << "Loop closure - spatial_thresh: " << loop_config.spatial_thresh
+              << " max_iter: " << loop_config.max_iter
+              << " min_key_diff: " << loop_config.min_key_diff << std::endl;
     std::cout << "==========================================\n" << std::endl;
 }
 

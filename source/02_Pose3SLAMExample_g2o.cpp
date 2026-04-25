@@ -1,10 +1,8 @@
 /**
- * @file Pose3SLAMExample_g2o.cpp modify by liunao 20250925
+ * @file Pose3SLAMExample_g2o_uniform.cpp
  * @brief A 3D Pose SLAM example that reads input from g2o, and initializes the Pose3 using InitializePose3
- * Syntax for the script is ./Pose3SLAMExample_g2o input.g2o output.g2o [timestamps.tum]
- * The first pose is fixed during optimization. If timestamps.tum is provided, those timestamps will be used in output.
- * @date Aug 25, 2014
- * @author Luca Carlone
+ * Modified to use distance-based GICP constraints for both odometry and loop closure
+ * @date 2026-04-20
  */
 
 #include <gtsam/slam/dataset.h>
@@ -26,6 +24,11 @@
 #include <iomanip>
 #include <map>
 #include <sstream>
+#include <thread>
+#include <chrono>
+#include <mutex>
+#include <atomic>
+#include <queue>
 #include <ros/ros.h>
 #include <Eigen/Dense>
 #include <Eigen/StdVector>
@@ -48,6 +51,7 @@
 #include <nano_gicp/nano_gicp.h>
 // Common configuration and structures
 #include "common.hpp"
+#include "sensor.hpp"
 #include "common_func.cpp"
 
 using namespace std;
@@ -56,19 +60,12 @@ using namespace gtsam;
 typedef pcl::PointXYZI pointtype;
 typedef pcl::PointCloud<pointtype>::Ptr cloud_ptr;
 
- 
-
-
 // Voxel filter parameters
 float g_min_distance = 2.50;
 float g_max_distance = 80.0;
 float g_min_z = -2.30;
 float g_max_z = 20.0;
 float g_voxel_size = 0.15;
-
-// GICP validation parameters
-float g_max_trans_diff = 2.0;
-float g_max_rot_diff = 0.5;
 
 // GICP parameters
 int g_gicp_correspondence_randomness = 128;
@@ -169,6 +166,7 @@ std::vector<TumPose> to_utm_pose(const std::vector<TumPose> &opt_enu_poses, cons
             // ! ENU坐标转UTM坐标（只旋转，不平移）
             // ! todo 原始的位置就是 lidar在utm下的位置
             // Eigen::Vector3d t_utm = rot_z * (utm_t - opt_enu_poses[0].t) ;
+
             Eigen::Vector3d t_utm = utm_t; // + opt_enu_poses[0].t ;
 
             TumPose p_utm;
@@ -591,14 +589,15 @@ bool runGICPGetRelative(const cloud_ptr &target,
         return false;
     }
 
-    ROS_INFO("runGICP: target_ds=%zu source_ds=%zu (voxel=%.3f)", target->size(), source->size(), g_voxel_size);
+    // ROS_INFO("runGICP: target_ds=%zu source_ds=%zu (voxel=%.3f)", target->size(), source->size(), g_voxel_size);
     cloud_ptr target_ds(new pcl::PointCloud<pointtype>());
     cloud_ptr source_ds(new pcl::PointCloud<pointtype>());
     applyAdvancedVoxelFilter(*source, *source_ds);
     applyAdvancedVoxelFilter(*target, *target_ds);
-    ROS_INFO("runGICP: target_ds=%zu source_ds=%zu (voxel=%.3f)", target_ds->size(), source_ds->size(), g_voxel_size);
+    // ROS_INFO("runGICP: target_ds=%zu source_ds=%zu (voxel=%.3f)", target_ds->size(), source_ds->size(), g_voxel_size);
 
     nano_gicp::NanoGICP<pointtype, pointtype> gicp;
+    gicp.setNumThreads(1);  // disable internal OpenMP — safe when called from std::threads
     gicp.setCorrespondenceRandomness(g_gicp_correspondence_randomness);
     gicp.setMaxCorrespondenceDistance(g_gicp_max_correspondence_distance);
     gicp.setMaximumIterations(g_gicp_max_iterations);
@@ -626,187 +625,25 @@ bool runGICPGetRelative(const cloud_ptr &target,
     
     // ROS_INFO("GICP converged fitness=%f", out_fitness);
     
-    static int cnt = 0;
+    static std::atomic<int> cnt{0};
+    static std::mutex save_mutex;  // protect concurrent mmap-based PCD writes
     std::string savePCDDirectory = "./loop_closure/";
     mkdir((savePCDDirectory).c_str(), 0777);
-    if (cnt % 50 == 0)
+    int my_cnt = cnt.fetch_add(1);  // atomic post-increment; read once
+    if (my_cnt % 500 == 0)
     {
-        std::cout << "debug file save to savePCDDirectory: " << savePCDDirectory << std::endl;   
-        pcl::io::savePCDFileBinary(savePCDDirectory + std::to_string(cnt) + "unused_result.pcd", Final);
-        pcl::io::savePCDFileBinary(savePCDDirectory + std::to_string(cnt) + "prevKeyframeCloud.pcd", *target);
-        pcl::io::savePCDFileBinary(savePCDDirectory + std::to_string(cnt) + "cureKeyframeCloud.pcd_" + std::to_string(out_fitness), *source);
+        std::lock_guard<std::mutex> save_lk(save_mutex);
+        // std::cout << "debug file save to savePCDDirectory: " << savePCDDirectory << std::endl;   
+        pcl::io::savePCDFileBinary(savePCDDirectory + std::to_string(my_cnt) + "unused_result.pcd", Final);
+        pcl::io::savePCDFileBinary(savePCDDirectory + std::to_string(my_cnt) + "prevKeyframeCloud.pcd", *target);
+        pcl::io::savePCDFileBinary(savePCDDirectory + std::to_string(my_cnt) + "cureKeyframeCloud.pcd_" + std::to_string(out_fitness), *source);
         // 判断final_tf与init_guess的差异，若过大则认为未收敛
-        std::cout << "init_guess: \n" << init_guess << std::endl;   
-        std::cout << "final_tf: \n" << final_tf << std::endl;   
+        // std::cout << "init_guess: \n" << init_guess << std::endl;   
+        // std::cout << "final_tf: \n" << final_tf << std::endl;   
     }
-    cnt++;
     return true;
 } 
 
-// Add loop closures between poses based on time and spatial thresholds using GICP on PCDs
-void addLoopToGraph(NonlinearFactorGraph &graph,
-                    const Values &initial,
-                    const map<Key, double> &timestamps,
-                    const std::string &pcd_dir,
-                    const LoopConfig &loop_config )
-{
-    // collect keys in initial
-    std::vector<Key> keys;
-    for (const auto &kv : initial)
-        keys.push_back(kv.key);
-    std::sort(keys.begin(), keys.end());
-
-    const int step = loop_config.step;
-    int max_loop_index = loop_config.end_index - step;
-
-    if ( loop_config.end_index >= keys.size() )
-    {
-        ROS_WARN("addLoopToGraph: invalid loop_config start_index or end_index");
-        max_loop_index = keys.size() - step ;
-        // exit(-1);
-    }
-    ROS_INFO("addLoopToGraph:  end_index=%d", max_loop_index);
-
-    // for (size_t i = 0; i < keys.size()  ; i = i + step)
-    for (size_t i = loop_config.start_index; i < max_loop_index ; i = i + step)
-    {
-        Key ki = keys[i];
-        if (!initial.exists<Pose3>(ki))
-            continue;
-        Pose3 pi = initial.at<Pose3>(ki);
-        double ti = 0;
-        auto it_ti = timestamps.find(ki);
-        if (it_ti != timestamps.end())
-            ti = it_ti->second;
-
-        auto cloud_i = loadPCDForIdTimestamp(pcd_dir, ki, ti);
-        if ( !cloud_i ) continue;
-
-        for (size_t j = max_loop_index; j >  step ; j = j - step)
-        {   // skip adjacent (i+1)
-            Key kj = keys[j];
-            if (!initial.exists<Pose3>(kj))
-                continue;
-            Pose3 pj = initial.at<Pose3>(kj);
-            double tj = 0;
-            auto it_tj = timestamps.find(kj);
-            if (it_tj != timestamps.end())
-                tj = it_tj->second;
-
-            if (std::fabs(tj - ti) < loop_config.time_thresh)
-                continue;
-            if (std::fabs(kj - ki) < loop_config.min_key_diff)
-                continue;
-
-            // spatial distance
-            Eigen::Vector3d di(pi.translation().x() - pj.translation().x(),
-                               pi.translation().y() - pj.translation().y(),
-                               pi.translation().z() - pj.translation().z());
-            double dist = di.norm();
-            if (dist > loop_config.spatial_thresh)
-                continue;
-
-            // load PCDs
-            if (timestamps.empty())
-            {
-                ROS_WARN("Timestamps empty, cannot load PCD by id_time");
-                continue;
-            }
-            auto cloud_j = loadPCDForIdTimestamp(pcd_dir, kj, tj);
-            if (!cloud_i || !cloud_j)
-                continue;
-
-            Eigen::Matrix4f init_guess = pose3ToEigenMatrix4f(pi.inverse() * pj);
-            Eigen::Matrix4f Tij;
-            double fitness = 999.0;
-            // std::cout << "Running GICP between " << ki << " and " << kj << std::endl;
-            bool ok = runGICPGetRelative(cloud_i, cloud_j, init_guess, Tij, fitness, loop_config.max_iter );
-            if (!ok)
-                continue;
-
-            // ⚠️ 严格的fitness阈值过滤: 拒绝质量差的loop closure，避免引入错误约束
-            // if (fitness > loop_config.max_fitness_reject) {
-            //     std::cout << "❌ Rejected loop " << ki << "-" << kj << " fitness=" << fitness 
-            //               << " (threshold=" << loop_config.max_fitness_reject << ")" << std::endl;
-            //     continue;
-            // }
-
-            Pose3 meas = eigenMatrix4fToPose3(Tij);
-            
-            // ========== Loop Closure权重调整 (修正重影问题) ==========
-            // 问题诊断: 单独loop匹配正常，但优化后仍有重影
-            // 原因: odom约束太强，loop约束太弱，无法充分修正重影
-            // 解决: 增强loop约束，让它能够有效拉齐重影点云
-            // 策略: loop约束应该强于odom，这样才能修正累积漂移造成的重影
-            
-            double var_trans, var_rot;
-            // if (fitness < 0.5) {
-            if (1) {
-                // 优质匹配: 强约束，可信赖，用于消除重影
-                var_trans = loop_config.var_trans;   // 从配置读取
-                var_rot = loop_config.var_rot;    // 从配置读取
-                std::cout << "✅ High quality loop (fitness=" << fitness << ") - Strong constraint" << std::endl;
-            } else {
-                // var_trans = 2 * loop_config.var_trans;   // 从配置读取
-                // var_rot = 2 * loop_config.var_rot;    // 从配置读取
-                // 一般匹配: 中等约束，基于fitness动态调整
-                var_trans = std::max(2.0, fitness);  
-                var_rot = std::max(0.1, fitness * 0.1);
-                var_trans = std::min(var_trans, 0.10);  // 最大10cm
-                var_rot = std::min(var_rot, 0.005);       // 最大0.5rad
-                std::cout << "⚠️  Normal quality loop (fitness=" << fitness << ") - Medium constraint" << std::endl;
-            }
-
-            var_trans = var_trans * var_trans;
-            var_rot = var_rot * var_rot;
-
-            gtsam::Vector variances = (gtsam::Vector(6) << var_rot, var_rot, var_rot, var_trans, var_trans, var_trans/4).finished();
-            auto noise = noiseModel::Diagonal::Variances(variances);
-            graph.add( BetweenFactor<Pose3>(ki, kj, meas, noise) );
-            std::cout << "Added loop constraint between " << ki << " and " << kj 
-                      << " dist=" << dist << " time_diff=" << std::fabs(tj - ti) 
-                      << " fitness=" << fitness 
-                      << " trans_std=" << std::sqrt(var_trans) << "m"
-                      << " rot_std=" << std::sqrt(var_rot) << "rad" << std::endl;
-            // ROS_ERROR("Added loop constraint between %d and %d : fitness=%f, trans_std=%.2fm", 
-            //           ki, kj, fitness, std::sqrt(var_trans));
-            // 保存到vector
-            // if (loop_constraints_out) {
-            //     LoopConstraint lc{ki, kj, meas, variances};
-            //     loop_constraints_out->push_back(lc);
-            // }
-            // break;
-        }
-    }
-}
-
-
-// 读loop closure约束g2o-like文本文件并加到graph
-bool readLoopClosuresFromG2O(const std::string& filename, NonlinearFactorGraph& graph) {
-    std::ifstream file(filename);
-    if (!file.is_open()) {
-        std::cerr << "Cannot open loop g2o file: " << filename << std::endl;
-        return false;
-    }
-    std::string line;
-    int count = 0;
-    while (std::getline(file, line)) {
-        if (line.empty() || line[0] == '#') continue;
-        std::istringstream iss(line);
-        std::string tag;
-        Key ki, kj;
-        double tx, ty, tz, qx, qy, qz, qw;
-        double var_rot, var_rot2, var_rot3, var_trans, var_trans2, var_trans3;
-        iss >> tag >> ki >> kj >> tx >> ty >> tz >> qx >> qy >> qz >> qw >> var_rot >> var_rot2 >> var_rot3 >> var_trans >> var_trans2 >> var_trans3;
-        gtsam::Pose3 meas(gtsam::Rot3::Quaternion(qw, qx, qy, qz), gtsam::Point3(tx, ty, tz));
-        gtsam::Vector variances = (gtsam::Vector(6) << var_rot, var_rot2, var_rot3, var_trans, var_trans2, var_trans3).finished();
-        auto noise = noiseModel::Diagonal::Variances(variances / 10.0);
-        graph.add(BetweenFactor<Pose3>(ki, kj, meas, noise));
-        ++count;
-    }
-    std::cout << "Loaded " << count << " loop closures from " << filename << std::endl;
-    return true;
-}
 
 
 void pts_to_world(const cloud_ptr &pts_local,
@@ -928,20 +765,32 @@ int main(int argc, char **argv)
     
     // Configuration variables
     std::string work_dir, lio_tum_pose;
-    std::string output_tum_file, pcd_dir, optimization_method;
+    std::string output_tum_file, pcd_dir;
     NoiseConfig noise_config;
     LoopConfig loop_config;
-    LidarGnssExtrinsic extrinsic;
-    bool save_loop_g2o, load_loop_g2o;
     YAML::Node config;
     
     // Load all configuration from YAML
-    loadConfigFromYAML(config_file, work_dir, optimization_method,
-                       noise_config, loop_config, save_loop_g2o, load_loop_g2o, extrinsic, config);
+    loadConfigFromYAML(config_file, work_dir, noise_config, loop_config, config);
+
+    // Load LiDAR-GNSS extrinsic from calib folder
+    const std::string extrinsics_folder = work_dir + "/calib/extrinsics/";
+    ExtrinsicManager tf_cache;
+    tf_cache.loadFolder(extrinsics_folder);
+    LidarGnssExtrinsic extrinsic;
+    {
+        Eigen::Matrix4d T_gnss_lidar;
+        if (!tf_cache.lookupTransform("gnss", "hesai128", T_gnss_lidar)) {
+            std::cerr << "[Extrinsic] Failed to lookup gnss <- hesai128, using identity!" << std::endl;
+            T_gnss_lidar = Eigen::Matrix4d::Identity();
+        }
+        extrinsic.q = Eigen::Quaterniond(T_gnss_lidar.block<3, 3>(0, 0)).normalized();
+        extrinsic.t = T_gnss_lidar.block<3, 1>(0, 3);
+    }
 
     // Get all YAML files from gnss_odoms_path directory
     std::string gnss_odoms_path =  work_dir + "/odoms";
-    std::string pointclouds_path = work_dir + "/pointclouds";
+    std::string pointclouds_path = work_dir + "/pointclouds_clean";
     
     std::string temp_file_dir = work_dir + "/debug_file/";
     std::string pose_dir_ready = work_dir + "/spare/vehicle_geo_pose/";
@@ -966,7 +815,6 @@ int main(int argc, char **argv)
         std::cerr << "No GNSS odom data loaded. Exiting." << std::endl;
         return -1;
     }
-    // return -1;
     
     // Convert GNSS odom data to LiDAR poses using extrinsic calibration
     std::vector<TumPose> lidar_poses = GetLidarPoseOnWorld(gnss_odom_data, extrinsic);
@@ -1005,6 +853,7 @@ int main(int argc, char **argv)
             auto priorNoise100 = noiseModel::Diagonal::Variances(priorVars100);
             graph.add(PriorFactor<Pose3>(key, curr, priorNoise100));
             std::cout << "Added periodic prior for pose " << i << " (key=" << key << ")" << std::endl;
+            // break;
         }
     }
     std::cout << "Added " << lidar_poses.size() << " initial poses" << std::endl;
@@ -1021,86 +870,230 @@ int main(int argc, char **argv)
                                                    gicp_trans_std_z * gicp_trans_std_z).finished();
     auto gicpNoise = noiseModel::Diagonal::Variances(gicpVars);
 
-    if ( load_loop_g2o ) {
-        // 直接从TUM文件读取相邻帧的位姿，构建里程计约束
-        std::cout << "[INFO] Using TUM file for odometry constraints: " << tum_odom_file << std::endl;
-        std::vector<TumPose> tum_odoms = readTumPose( tum_odom_file );
-        if (tum_odoms.size() < 2) {
-            std::cerr << "[ERROR] Not enough poses in TUM file for odometry constraints." << std::endl;
-            return -1;
-        }
-        for (size_t i = 0; i < tum_odoms.size() - 1; ++i) {
-            const TumPose &pose_i = tum_odoms[i];
-            const TumPose &pose_j = tum_odoms[i + 1];
-            gtsam::Quaternion qi(pose_i.q.w(), pose_i.q.x(), pose_i.q.y(), pose_i.q.z());
-            gtsam::Rot3 Ri = gtsam::Rot3::Quaternion(qi.w(), qi.x(), qi.y(), qi.z());
-            gtsam::Point3 ti(pose_i.t.x(), pose_i.t.y(), pose_i.t.z());
-            gtsam::Pose3 pi(Ri, ti);
+    // ========== 修改：基于距离阈值的GICP约束（统一处理里程计和回环）==========
+    std::cout << "\n========== Building GICP constraints based on distance threshold ==========" << std::endl;
+    
+    // 使用回环配置中的距离阈值
+    double gicp_distance_threshold = loop_config.spatial_thresh;
+    int min_key_diff = loop_config.min_key_diff;  // 最小关键帧索引差，避免相邻帧重复匹配
+    
+    std::cout << "Distance threshold: " << gicp_distance_threshold << "m" << std::endl;
+    std::cout << "Min keyframe index difference: " << min_key_diff << std::endl;
+    
+    // Phase 1: 枚举所有符合条件的帧对 (i < j)，去重
+    struct GicpTask {
+        int i, j;
+        double ti, tj;
+        double distance;
+        Eigen::Matrix4f init_guess;
+    };
+    std::vector<GicpTask> gicp_tasks;
+    
+    const int n_poses = static_cast<int>(lidar_poses.size());
+
+    int cnt = 0;
+    
+    for (int i = 0; i < n_poses; ++i) {
+        const TumPose &pose_i = lidar_poses[i];
+        gtsam::Quaternion qi(pose_i.q.w(), pose_i.q.x(), pose_i.q.y(), pose_i.q.z());
+        gtsam::Rot3 Ri = gtsam::Rot3::Quaternion(qi.w(), qi.x(), qi.y(), qi.z());
+        gtsam::Point3 ti(pose_i.t.x(), pose_i.t.y(), pose_i.t.z());
+        gtsam::Pose3 pi(Ri, ti);
+        
+        
+        for (int j = i + 1; j < n_poses; ++j) {
+            const TumPose &pose_j = lidar_poses[j];
+
+            // 统一构造pose_j，后续用于初始化相对位姿
             gtsam::Quaternion qj(pose_j.q.w(), pose_j.q.x(), pose_j.q.y(), pose_j.q.z());
             gtsam::Rot3 Rj = gtsam::Rot3::Quaternion(qj.w(), qj.x(), qj.y(), qj.z());
             gtsam::Point3 tj(pose_j.t.x(), pose_j.t.y(), pose_j.t.z());
             gtsam::Pose3 pj(Rj, tj);
-            gtsam::Pose3 rel = pi.inverse() * pj;
-            Key ki = static_cast<Key>(i);
-            Key kj = static_cast<Key>(i + 1);
-            graph.add(BetweenFactor<Pose3>(ki, kj, rel, gicpNoise));
-        }
-        std::cout << "[INFO] Added " << (tum_odoms.size() - 1) << " odometry constraints from TUM file." << std::endl;
-    } else {
-        // ...existing code for GICP odometry constraints...
-        std::vector<std::string> pcd_files = convertYamlPathsToPcdPaths(gnss_odom_files, pointclouds_path);
-        // std::cout << "  pcd_files.size()  " <<  pcd_files.size() << std::endl;
-        // std::cout << "  pcd_files.size()  " <<  pcd_files.back() << std::endl;
-        int successful_gicp = 0;
-        int failed_gicp = 0;
-        for (size_t i = 0; i < pcd_files.size() - 1; ++i) {
-            const TumPose &pose_i = lidar_poses[i];
-            const TumPose &pose_j = lidar_poses[i + 1];
-            cloud_ptr cloud_i = getCachedPointCloud(pcd_files[i]);
-            cloud_ptr cloud_j = getCachedPointCloud(pcd_files[i + 1]);
-            if (!cloud_i || !cloud_j || cloud_i->empty() || cloud_j->empty()) {
-                std::cerr << "Failed to load point clouds for frames " << i << " and " << (i+1) << std::endl;
-                failed_gicp++;
+
+            const double distance = (ti - tj).norm();
+            const bool is_adjacent = (std::abs(j - i) <= min_key_diff);
+            const bool within_distance = (distance <= gicp_distance_threshold);
+
+            // 满足“相邻”或“距离阈值”任一条件就加入任务
+            // if (!is_adjacent ) {
+            if (!is_adjacent && !within_distance) {
                 continue;
             }
-            gtsam::Quaternion qi(pose_i.q.w(), pose_i.q.x(), pose_i.q.y(), pose_i.q.z());
-            gtsam::Rot3 Ri = gtsam::Rot3::Quaternion(qi.w(), qi.x(), qi.y(), qi.z());
-            gtsam::Point3 ti(pose_i.t.x(), pose_i.t.y(), pose_i.t.z());
-            gtsam::Pose3 pi(Ri, ti);
-            gtsam::Quaternion qj(pose_j.q.w(), pose_j.q.x(), pose_j.q.y(), pose_j.q.z());
-            gtsam::Rot3 Rj = gtsam::Rot3::Quaternion(qj.w(), qj.x(), qj.y(), qj.z());
-            gtsam::Point3 tj(pose_j.t.x(), pose_j.t.y(), pose_j.t.z());
-            gtsam::Pose3 pj(Rj, tj);
-            Eigen::Matrix4f init_guess = pose3ToEigenMatrix4f(pi.inverse() * pj);
-            std::cerr << "try GICP for frames " << i << " -> " << (i+1) << std::endl;
-            Eigen::Matrix4f Tij;
-            double fitness = 999.0;
-            bool ok = runGICPGetRelative(cloud_i, cloud_j, init_guess, Tij, fitness, loop_config.max_iter);
-            if (!ok) {
-                failed_gicp++;
-                continue;
-            }
-            gtsam::Pose3 meas = eigenMatrix4fToPose3(Tij);
-            Key ki = static_cast<Key>(i);
-            Key kj = static_cast<Key>(i + 1);
-            graph.add(BetweenFactor<Pose3>(ki, kj, meas, gicpNoise));
-            successful_gicp++;
-            if ((i + 1) % 10 == 0) {
-                std::cout << "Processed " << (i + 1) << "/" << (pcd_files.size() - 1) 
-                          << " frame pairs (fitness=" << fitness << ")" << std::endl;
-            }
+
+            gtsam::Pose3 rel_init = pi.inverse() * pj;
+            gicp_tasks.push_back({
+                i, j,
+                pose_i.timestamp, pose_j.timestamp,
+                distance,
+                pose3ToEigenMatrix4f(rel_init)
+            });
         }
-        std::cout << "\n========== GICP Odometry Summary ==========" << std::endl;
-        std::cout << "Successful GICP: " << successful_gicp << std::endl;
-        std::cout << "Failed GICP: " << failed_gicp << std::endl;
-        std::cout << "Total BetweenFactors added: " << successful_gicp << std::endl;
-        std::cout << "==========================================\n" << std::endl;
     }
     
-    addLoopToGraph(graph, initial, key_frame_timestamps , pointclouds_path, loop_config);
+    std::cout << "Found " << gicp_tasks.size() << " candidate frame pairs (distance <= " 
+              << gicp_distance_threshold << "m)" << std::endl;
+    // exit(0);
+    
+    // Phase 2: 多线程并行GICP
+    struct GicpResult {
+        int i, j;
+        double distance;
+        Eigen::Matrix4f Tij;
+        double fitness;
+        bool ok;
+    };
+    std::vector<GicpResult> gicp_results(gicp_tasks.size());
 
-    // exit (0);
- 
+    for (auto &res : gicp_results) {
+        res.i = -1;
+        res.j = -1;
+        res.distance = 0.0;
+        res.Tij = Eigen::Matrix4f::Identity();
+        res.fitness = 999.0;
+        res.ok = false;
+    }
+    
+    std::atomic<int> task_idx{0};
+    const int n_threads = static_cast<int>(std::max(1u, std::thread::hardware_concurrency()));
+    std::cout << "Running GICP with " << n_threads << " threads..." << std::endl;
+    
+    // 获取PCD文件路径列表
+    std::vector<std::string> pcd_files = convertYamlPathsToPcdPaths(gnss_odom_files, pointclouds_path);
+    
+    std::atomic<int> finished_tasks{0};
+    std::atomic<int> last_reported_percent{-1};
+    std::atomic<long long> total_task_ns{0};
+    std::mutex progress_mutex;
+    const auto gicp_start_time = std::chrono::steady_clock::now();
+
+    auto format_hms = [](double seconds) {
+        if (seconds < 0.0) seconds = 0.0;
+        int total_sec = static_cast<int>(seconds + 0.5);
+        int hh = total_sec / 3600;
+        int mm = (total_sec % 3600) / 60;
+        int ss = total_sec % 60;
+        std::ostringstream oss;
+        oss << std::setfill('0') << std::setw(2) << hh << ":"
+            << std::setw(2) << mm << ":"
+            << std::setw(2) << ss;
+        return oss.str();
+    };
+    
+    auto gicp_worker = [&]() {
+        auto report_progress = [&](long long task_ns) {
+            total_task_ns.fetch_add(task_ns, std::memory_order_relaxed);
+            const int done = finished_tasks.fetch_add(1) + 1;
+            const int total = static_cast<int>(gicp_tasks.size());
+            const int percent = (total > 0) ? static_cast<int>(100.0 * done / total) : 100;
+            const int old_percent = last_reported_percent.load();
+
+            if (1) {
+            // if (percent / 2 > old_percent / 2) {
+                std::lock_guard<std::mutex> lk(progress_mutex);
+                if (percent > last_reported_percent.load()) {
+                    last_reported_percent.store(percent);
+                    const double avg_ms = (done > 0)
+                                              ? (static_cast<double>(total_task_ns.load(std::memory_order_relaxed)) / done) / 1e6
+                                              : 0.0;
+                    const int remaining = std::max(0, total - done);
+                    const double eta_sec = (n_threads > 0)
+                                               ? (avg_ms / 1000.0) * static_cast<double>(remaining) / static_cast<double>(n_threads)
+                                               : 0.0;
+
+                    std::cout << "\rProcessing GICP: " << percent << "% (" << done << "/" << total
+                              << ") avg=" << std::fixed << std::setprecision(1) << avg_ms
+                              << "ms eta=" << format_hms(eta_sec) << std::flush;
+                }
+            }
+        };
+
+        while (true) {
+            const auto task_begin = std::chrono::steady_clock::now();
+            const int task_id = task_idx.fetch_add(1);
+            if (task_id >= static_cast<int>(gicp_tasks.size())) return;
+
+            const GicpTask &task = gicp_tasks[task_id];
+            GicpResult &res = gicp_results[task_id];
+            res.i = task.i;
+            res.j = task.j;
+            res.distance = task.distance;
+            res.ok = false;
+            res.fitness = 999.0;
+            res.Tij = Eigen::Matrix4f::Identity();
+            
+            // 加载点云
+            cloud_ptr cloud_i = loadPCDForIdTimestamp(pointclouds_path, task.i, task.ti);
+            cloud_ptr cloud_j = loadPCDForIdTimestamp(pointclouds_path, task.j, task.tj);
+            
+            if (!cloud_i || !cloud_j || cloud_i->empty() || cloud_j->empty()) {
+                const auto task_end = std::chrono::steady_clock::now();
+                const long long task_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(task_end - task_begin).count();
+                report_progress(task_ns);
+                continue;
+            }
+            
+            // 运行GICP
+            res.ok = runGICPGetRelative(cloud_i, cloud_j, task.init_guess, res.Tij, res.fitness, loop_config.max_iter);
+            const auto task_end = std::chrono::steady_clock::now();
+            const long long task_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(task_end - task_begin).count();
+            report_progress(task_ns);
+        }
+    };
+    
+    std::vector<std::thread> gicp_threads;
+    gicp_threads.reserve(n_threads);
+    for (int t = 0; t < n_threads; ++t) {
+        gicp_threads.emplace_back(gicp_worker);
+    }
+    for (auto &thr : gicp_threads) {
+        thr.join();
+    }
+    const double total_elapsed_sec = std::chrono::duration<double>(std::chrono::steady_clock::now() - gicp_start_time).count();
+    std::cout << "\rProcessing GICP: 100% (" << gicp_tasks.size() << "/" << gicp_tasks.size()
+              << ") avg=" << std::fixed << std::setprecision(1)
+              << ((gicp_tasks.empty()) ? 0.0 : (static_cast<double>(total_task_ns.load()) / static_cast<double>(gicp_tasks.size())) / 1e6)
+              << "ms eta=00:00:00 elapsed=" << format_hms(total_elapsed_sec) << std::endl;
+    
+    // Phase 3: 将成功的GICP结果添加到因子图
+    int successful_gicp = 0;
+    int failed_gicp = 0;
+
+    
+    for (const auto &res : gicp_results) {
+        if (res.ok) {
+            const Key ki = static_cast<Key>(res.i);
+            const Key kj = static_cast<Key>(res.j);
+
+            // Protect optimizer from malformed factors caused by invalid task results.
+            if (!initial.exists<Pose3>(ki) || !initial.exists<Pose3>(kj) || ki == kj) {
+                failed_gicp++;
+                continue;
+            }
+            
+            // std::cout << "  Added constraint: " << ki << " -> " << kj << std::endl;
+            // std::cout << "  Added constraint: "   << " -> " << gicpNoise << std::endl;
+            // std::cout << "  Added constraint: "   << " -> " << res.Tij << std::endl;
+
+            gtsam::Pose3 meas = eigenMatrix4fToPose3(res.Tij);
+            graph.add(BetweenFactor<Pose3>(ki, kj, meas, gicpNoise));
+            successful_gicp++;
+            
+            // if (successful_gicp % 100 == 0) {
+            //     std::cout << "  Added constraint: " << res.i << " -> " << res.j 
+            //               << ", distance=" << res.distance << "m, fitness=" << res.fitness << std::endl;
+            // }
+        } else {
+            failed_gicp++;
+        }
+    }
+    
+    std::cout << "\n========== GICP Constraint Summary ==========" << std::endl;
+    std::cout << "Total candidate pairs: " << gicp_tasks.size() << std::endl;
+    std::cout << "Successful GICP: " << successful_gicp << std::endl;
+    std::cout << "Failed GICP: " << failed_gicp << std::endl;
+    std::cout << "Total BetweenFactors added: " << successful_gicp << std::endl;
+    std::cout << "Distance threshold: " << gicp_distance_threshold << "m" << std::endl;
+    std::cout << "==========================================\n" << std::endl;
     std::cout << "Optimizing the factor graph" << std::endl;
 
     // Load LM optimizer parameters from config
@@ -1156,7 +1149,7 @@ int main(int argc, char **argv)
     pose_data.offset_utm.z() = origin_info.utm_alt;
 
     cloud_ptr global_map(new pcl::PointCloud<pointtype>());
-    // for (const auto pose : utm_opt_pose)
+
     for (int i = 0; i < utm_opt_pose.size(); ++i)
     {
         const auto &pose = utm_opt_pose[i];

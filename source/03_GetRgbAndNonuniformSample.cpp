@@ -1,7 +1,9 @@
-#include "sensor.hpp"
 #include <cmath>
 #include <optional>
 #include <utility>
+#include <thread>
+#include <mutex>
+#include <atomic>
 #include <opencv2/opencv.hpp>
 
 #include <pcl/io/pcd_io.h>
@@ -9,6 +11,8 @@
 #include <pcl/point_cloud.h>
 #include <pcl/common/transforms.h>
 #include <pcl/filters/crop_box.h>
+
+#include "sensor.hpp"
 
 #include "common_func.cpp"
 #include "common.hpp"
@@ -118,12 +122,29 @@ std::optional<ProjectPointsResult> project_points_to_image(
 
 int main(int argc, char **argv)
 {
-    const std::string work_dir = "/home/xf/Desktop/catkin_ws/data/raw_data_20251220_1/";
+    // 读取配置文件
+    std::string config_file = "/home/xf/Desktop/catkin_ws/src/HBA/rviz_cfg/config.yaml";
+    if (argc > 1)
+        config_file = argv[1];
+    std::cout << "try load config file: " << config_file << std::endl;
+    YAML::Node config;
+    try
+    {
+        config = YAML::LoadFile(config_file);
+    }
+    catch (const std::exception &e)
+    {
+        std::cerr << "Failed to load config file: " << config_file << ", error: " << e.what() << std::endl;
+        return 1;
+    }
+    const std::string work_dir = config["paths"]["work_dir"].as<std::string>("/mnt/nvme0n1p2/data/nongan_m2_1028/");
+    std::cerr << "work_dir is : " << work_dir << std::endl;
+
     const std::string extrinsics_folder = work_dir + "/calib/extrinsics/";
     const std::string cam_folder = work_dir + "/calib/intrinsics/";
     const std::string lidar_name = "hesai128";
     const std::string image_root = work_dir + "/images";
-    const std::string pcd_root = work_dir + "/pointclouds";
+    const std::string pcd_root = work_dir + "/pointclouds_clean";
     const std::string pose_root = work_dir + "/spare/vehicle_geo_pose";
     const std::string rgb_pcd_root = work_dir + "/pointclouds_rgb";
     const std::string output_root = work_dir + "/spare/post";
@@ -150,136 +171,153 @@ int main(int argc, char **argv)
     FilterT::PoseList pose_list;
     std::vector<FilterT::CloudPtr> cloud_list;
 
-    int processed_count = 0;
+    const int n_frames = static_cast<int>(frame_id_timestamps.size());
 
-    for (const auto &frame : frame_id_timestamps)
-    {
-        processed_count++;
-        const std::string pcd_path = pcd_root + "/" + frame + ".pcd";
-        const std::string pose_path = pose_root + "/" + frame + ".yaml";
+    // Pre-allocate per-frame result slots (indexed same as frame_id_timestamps)
+    struct FrameResult {
+        FilterT::CloudPtr  rgb_cloud;
+        Eigen::Affine3d    pose_mat;
+        bool               valid{false};
+        EIGEN_MAKE_ALIGNED_OPERATOR_NEW
+    };
+    std::vector<FrameResult> frame_results(n_frames);
 
-        // if (processed_count % 2 == 0)
-        // {
-        //     continue;
-        // }
+    std::atomic<int> frame_task_idx{0};      // atomic work queue
+    std::atomic<int> processed_count{0};     // progress counter
+    std::mutex       save_mutex;             // protect debug PCD saves
 
-        if (processed_count % 100 == 0)
-        {
-            // std::cout << "[Pipeline] Processed 100 frames, stopping demo." << std::endl;
-            std::cout << "[Pipeline] Processed " << processed_count << " frames." << std::endl;
-            // break;
-        }
+    const int n_threads = static_cast<int>(std::max(1u, std::thread::hardware_concurrency())) - 2;
+    std::cout << "[Pipeline] Parallel frame processing: " << n_frames
+              << " frames, " << n_threads << " threads" << std::endl;
 
-        pcl::PointCloud<pcl::PointXYZI>::Ptr original_cloud(new pcl::PointCloud<pcl::PointXYZI>);
-        pcl::PointCloud<pcl::PointXYZI>::Ptr cloud(new pcl::PointCloud<pcl::PointXYZI>);
-        if (pcl::io::loadPCDFile<pcl::PointXYZI>(pcd_path, *original_cloud) == -1)
-        {
-            std::cerr << "[PCD] Failed to read: " << pcd_path << std::endl;
-            continue;
-        }
+    auto frame_worker = [&]() {
+        while (true) {
+            int fi = frame_task_idx.fetch_add(1);
+            if (fi >= n_frames) return;
 
-        // std::cout << "[Pipeline] original_cloud: " << original_cloud->size() << " points." << std::endl;
-        const float min_m = 4.0f;
+            const std::string &frame = frame_id_timestamps[fi];
+            const std::string pcd_path  = pcd_root  + "/" + frame + ".pcd";
+            const std::string pose_path = pose_root + "/" + frame + ".yaml";
 
-        pcl::CropBox<pcl::PointXYZI> region;                          
-        region.setMin(Eigen::Vector4f(-min_m, -min_m, -100, 1.0)); // Min和Max是指立方体的两个对角点。每个点由一个四维向量表示，通常最后一个是1.
-        region.setMax(Eigen::Vector4f(min_m, min_m, 100, 1.0));
-        region.setInputCloud(original_cloud); // 放入过滤后的点云
-        region.setNegative(true);       // false 删除立方体内的点  
-        region.filter(*cloud);         // 过滤，结果存入cloud
-        // std::cout << "[Pipeline] Loaded and cropped cloud: " << cloud->size() << " points." << std::endl;
+            int cnt = processed_count.fetch_add(1) + 1;
+            if (cnt % 100 == 0)
+                std::cout << "[Pipeline] Processed " << cnt << " frames." << std::endl;
 
-        // ====================== 修复 1：每一帧都创建新的点云！======================
-        pcl::PointCloud<pcl::PointXYZRGB>::Ptr rgb_cloud(new pcl::PointCloud<pcl::PointXYZRGB>);
-
-        for (int cam_idx = 1; cam_idx <= 7; ++cam_idx)
-        {
-            const std::string camera_name = "cam" + std::to_string(cam_idx);
-            const std::string image_path = image_root + "/" + camera_name + "/" + frame + ".jpg";
-
-            cv::Mat K, D;
-            int img_w = 0, img_h = 0;
-            if (!cam_intr.getIntrinsic(camera_name, K, D, &img_w, &img_h))
-            {
-                std::cerr << "[cameraIntrinsic] Missing intrinsics for " << camera_name << std::endl;
+            pcl::PointCloud<pcl::PointXYZI>::Ptr original_cloud(new pcl::PointCloud<pcl::PointXYZI>);
+            pcl::PointCloud<pcl::PointXYZI>::Ptr cloud(new pcl::PointCloud<pcl::PointXYZI>);
+            if (pcl::io::loadPCDFile<pcl::PointXYZI>(pcd_path, *original_cloud) == -1) {
+                std::cerr << "[PCD] Failed to read: " << pcd_path << std::endl;
                 continue;
             }
 
-            Eigen::Matrix4d T_cam_lidar;
-            if (!tf_cache.lookupTransform(camera_name, lidar_name, T_cam_lidar))
-            {
-                std::cerr << "[TFCache] Missing transform: " << camera_name << " <- " << lidar_name << std::endl;
-                continue;
+            const float min_m = 4.0f;
+            pcl::CropBox<pcl::PointXYZI> region;
+            region.setMin(Eigen::Vector4f(-min_m, -min_m, -100, 1.0));
+            region.setMax(Eigen::Vector4f(min_m,  min_m,  100, 1.0));
+            region.setInputCloud(original_cloud);
+            region.setNegative(true);
+            region.filter(*cloud);
+
+            // ====================== 修复 1：每一帧都创建新的点云！======================
+            pcl::PointCloud<pcl::PointXYZRGB>::Ptr rgb_cloud(new pcl::PointCloud<pcl::PointXYZRGB>);
+
+            for (int cam_idx = 1; cam_idx <= 7; ++cam_idx) {
+                const std::string camera_name = "cam" + std::to_string(cam_idx);
+                const std::string image_path  = image_root + "/" + camera_name + "/" + frame + ".jpg";
+
+                cv::Mat K, D;
+                int img_w = 0, img_h = 0;
+                if (!cam_intr.getIntrinsic(camera_name, K, D, &img_w, &img_h)) {
+                    std::cerr << "[cameraIntrinsic] Missing intrinsics for " << camera_name << std::endl;
+                    continue;
+                }
+
+                Eigen::Matrix4d T_cam_lidar;
+                if (!tf_cache.lookupTransform(camera_name, lidar_name, T_cam_lidar)) {
+                    std::cerr << "[TFCache] Missing transform: " << camera_name << " <- " << lidar_name << std::endl;
+                    continue;
+                }
+
+                cv::Mat image = cv::imread(image_path, cv::IMREAD_COLOR);
+                if (image.empty()) {
+                    std::cerr << "[Image] Failed to read: " << image_path << std::endl;
+                    continue;
+                }
+
+                if (img_w > 0 && img_h > 0 && (image.cols != img_w || image.rows != img_h))
+                    cv::resize(image, image, cv::Size(img_w, img_h));
+
+                auto projection = project_points_to_image(image, K, D, T_cam_lidar, cloud);
+                if (!projection) {
+                    std::cerr << "[Pipeline] Projection failed for " << frame << " " << camera_name << std::endl;
+                    continue;
+                }
+                *rgb_cloud += *(projection->second);
             }
 
-            cv::Mat image = cv::imread(image_path, cv::IMREAD_COLOR);
-            if (image.empty())
+            // ====================== 修复 2：累加后必须设置正确的云信息 ======================
+            rgb_cloud->width  = static_cast<uint32_t>(rgb_cloud->size());
+            rgb_cloud->height = 1;
+            rgb_cloud->is_dense = true;
+
+            auto lidar_pose = readPoseFromYaml(pose_path);
+
+            // Store result at this frame's slot (no data race — each thread writes a unique fi)
+            frame_results[fi].rgb_cloud = rgb_cloud;
+            frame_results[fi].pose_mat  = lidar_pose.transformation_matrix;
+            frame_results[fi].valid     = true;
+
+            // 仅仅保留部分作为调试输出
+            if (cnt % 100 != 0) continue;
+
+            const std::string final_colored_pcd = rgb_pcd_root + "/" + frame + ".pcd";
             {
-                std::cerr << "[Image] Failed to read: " << image_path << std::endl;
-                continue;
+                std::lock_guard<std::mutex> lk(save_mutex);
+                if (pcl::io::savePCDFileBinary(final_colored_pcd, *rgb_cloud) == -1)
+                    std::cerr << "[Pipeline] Failed to save final colored PCD: " << final_colored_pcd << std::endl;
+                else
+                    std::cout << "[Pipeline] Saved final colored point cloud to: " << final_colored_pcd << std::endl;
             }
-
-            if (img_w > 0 && img_h > 0 && (image.cols != img_w || image.rows != img_h))
-                cv::resize(image, image, cv::Size(img_w, img_h));
-
-            auto projection = project_points_to_image(image, K, D, T_cam_lidar, cloud);
-            if (!projection)
-            {
-                std::cerr << "[Pipeline] Projection failed for " << frame << " " << camera_name << std::endl;
-                continue;
-            }
-            *rgb_cloud += *(projection->second);
-
-            // std::cout << "[Pipeline] Done: frame=" << frame << ", camera=" << camera_name << std::endl;
         }
+    };
 
-        // ====================== 修复 2：累加后必须设置正确的云信息 ======================
-        rgb_cloud->width = rgb_cloud->size();
-        rgb_cloud->height = 1;
-        rgb_cloud->is_dense = true;
+    std::vector<std::thread> frame_threads;
+    frame_threads.reserve(n_threads);
+    for (int t = 0; t < n_threads; ++t)
+        frame_threads.emplace_back(frame_worker);
+    for (auto &thr : frame_threads) thr.join();
 
-        auto lidar_pose = readPoseFromYaml(pose_path);
-
-        // pcl::transformPointCloud(*rgb_cloud, *rgb_cloud, lidar_pose.transformation_matrix);
-
-        pose_list.push_back(lidar_pose.transformation_matrix);
-        cloud_list.push_back(rgb_cloud);
-
-
-        if ( processed_count % 100 )
-            continue;
-
-        const std::string final_colored_pcd = rgb_pcd_root + "/" + frame + ".pcd";
-        if (pcl::io::savePCDFileBinary(final_colored_pcd, *rgb_cloud) == -1)
-        {
-            std::cerr << "[Pipeline] Failed to save final colored PCD: " << final_colored_pcd << std::endl;
-        }
-        else
-        {
-            std::cout << "[Pipeline] Saved final colored point cloud to: " << final_colored_pcd << std::endl;
-        }
-
+    // Collect results in original frame order
+    int processed_final = 0;
+    for (int fi = 0; fi < n_frames; ++fi) {
+        if (!frame_results[fi].valid) continue;
+        pose_list.push_back(frame_results[fi].pose_mat);
+        cloud_list.push_back(frame_results[fi].rgb_cloud);
+        ++processed_final;
     }
+    std::cout << "[Pipeline] Collected " << processed_final << " valid frames." << std::endl;
 
-    if (!adaptive_filter.setKeyPose(pose_list)) {
+    // 开始执行自适应体素滤波
+    if (!adaptive_filter.setKeyPose(pose_list))
+    {
         std::cerr << "Failed to set key poses: pose/cloud vector size mismatch." << std::endl;
         return -1;
     }
-    if (!adaptive_filter.setKeyPointCloud(cloud_list)) {
+    if (!adaptive_filter.setKeyPointCloud(cloud_list))
+    {
         std::cerr << "Failed to build unified cloud from batched poses/clouds." << std::endl;
         return -1;
     }
 
     auto raw_unified_cloud = adaptive_filter.getRawUnifiedCloud();
-    std::cout << "local raw unified cloud " << raw_unified_cloud->size()   << std::endl;
+    std::cout << "local raw unified cloud " << raw_unified_cloud->size() << std::endl;
 
     std::vector<std::pair<float, float>> adaptive_voxel_params = {
         {0.0f, 0.1f},
-        {10.0f, 0.15f},
-        {20.0f, 0.2f},
-        {40.0f, 0.25f},
-        {FLT_MAX, 0.3f}
-    };
+        {10.0f, 0.2f},
+        {20.0f, 0.3f},
+        {40.0f, 0.4f},
+        {FLT_MAX, 0.5f}};
     adaptive_filter.setAdaptiveVoxelParams(adaptive_voxel_params);
 
     FilterT::CloudPtr merged_cloud;
@@ -312,7 +350,7 @@ int main(int argc, char **argv)
 
     std::cout << "\n========================================" << std::endl;
     std::cout << "Processing completed!" << std::endl;
-    std::cout << "Successfully processed: " << processed_count << " files" << std::endl;
+    std::cout << "Successfully processed: " << processed_final << " files" << std::endl;
     std::cout << "Raw points: " << raw_unified_cloud->size() << std::endl;
     std::cout << "Filtered points: " << (merged_cloud ? merged_cloud->size() : 0) << std::endl;
     std::cout << "Output directory: " << output_root << std::endl;

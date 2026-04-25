@@ -1,2 +1,3 @@
 .vscode/settings.json
 ./rviz_cfg/*.rviz
+../launch/*.launch
