@@ -148,7 +148,16 @@ target_link_libraries(01_get_raw_data
 )
 
 
-add_executable(02_Pose3SLAMExample_g2o source/02_Pose3SLAMExample_g2o.cpp)
+set(FAST_GICP_CUDA_LIB_DIR "/home/xf/Documents/fast_gicp/build/devel/lib")
+set(PATCHWORKPP_INCLUDE_DIR "/home/xf/Documents/patchwork-plusplus/cpp/patchworkpp/include")
+set(PATCHWORKPP_SOURCE "/home/xf/Documents/patchwork-plusplus/cpp/patchworkpp/src/patchworkpp.cpp")
+
+include_directories(${PATCHWORKPP_INCLUDE_DIR})
+
+add_executable(02_Pose3SLAMExample_g2o
+  source/02_Pose3SLAMExample_g2o.cpp
+)
+
 target_link_libraries(02_Pose3SLAMExample_g2o
   ${catkin_LIBRARIES} 
   ${PCL_LIBRARIES}  
@@ -156,8 +165,27 @@ target_link_libraries(02_Pose3SLAMExample_g2o
   ${GDAL_LIBRARIES}
   ${TBB_LIBRARIES}
   nano_gicp_lib
+  ${FAST_GICP_CUDA_LIB_DIR}/libfast_gicp.so
+  ${FAST_GICP_CUDA_LIB_DIR}/libfast_vgicp_cuda.so
   gtsam
   yaml-cpp
+  Geographic
+)
+set_target_properties(02_Pose3SLAMExample_g2o PROPERTIES
+  BUILD_RPATH "${FAST_GICP_CUDA_LIB_DIR}"
+)
+
+add_executable(02_refined_ground
+  source/02_refined_ground.cpp
+  ${PATCHWORKPP_SOURCE}
+)
+
+target_link_libraries(02_refined_ground
+  ${catkin_LIBRARIES} 
+  ${PCL_LIBRARIES}  
+  nano_gicp_lib
+  yaml-cpp
+  gtsam
   Geographic
 )
 

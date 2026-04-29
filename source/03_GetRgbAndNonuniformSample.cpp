@@ -144,7 +144,7 @@ int main(int argc, char **argv)
     const std::string cam_folder = work_dir + "/calib/intrinsics/";
     const std::string lidar_name = "hesai128";
     const std::string image_root = work_dir + "/images";
-    const std::string pcd_root = work_dir + "/pointclouds_clean";
+    const std::string pcd_root = work_dir + "/pointclouds";
     const std::string pose_root = work_dir + "/spare/vehicle_geo_pose";
     const std::string rgb_pcd_root = work_dir + "/pointclouds_rgb";
     const std::string output_root = work_dir + "/spare/post";
@@ -200,6 +200,8 @@ int main(int argc, char **argv)
             const std::string pose_path = pose_root + "/" + frame + ".yaml";
 
             int cnt = processed_count.fetch_add(1) + 1;
+            // if (cnt % 2 == 0) continue;
+            if (cnt > 200) break;
             if (cnt % 100 == 0)
                 std::cout << "[Pipeline] Processed " << cnt << " frames." << std::endl;
 

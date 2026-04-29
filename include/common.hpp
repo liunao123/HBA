@@ -115,7 +115,7 @@ struct ENUConverter {
     lat0 = lat_ref; lon0 = lon_ref; h0 = h_ref;
     proj.reset(new GeographicLib::LocalCartesian(lat0, lon0, h0));
     initialized = true;
-    ROS_INFO("LocalCartesian ENU initialized at lat=%.8f lon=%.8f h=%.3f", lat0, lon0, h0);
+    PCL_ERROR("LocalCartesian ENU initialized at lat=%.8f lon=%.8f h=%.3f", lat0, lon0, h0);
   }
 
   // convert lat/lon/alt -> ENU (x east, y north, z up)
@@ -141,7 +141,7 @@ struct EnuOriginInfo {
 
 bool write_enu_origin_yaml(const ENUConverter& enu, const std::string& filepath) {
   if (filepath.empty()) {
-    ROS_ERROR("UTM offset path is empty, skip writing ENU origin.");
+    PCL_ERROR("UTM offset path is empty, skip writing ENU origin.");
     return false;
   }
   if (!enu.initialized) {
@@ -152,7 +152,7 @@ bool write_enu_origin_yaml(const ENUConverter& enu, const std::string& filepath)
       fout << node;
       fout.close();
     }
-    ROS_ERROR("Failed to write ENU origin to %s: ENU not initialized.", filepath.c_str());
+    PCL_ERROR("Failed to write ENU origin to %s: ENU not initialized.", filepath.c_str());
     return false;
   }
   try {
@@ -174,15 +174,15 @@ bool write_enu_origin_yaml(const ENUConverter& enu, const std::string& filepath)
 
     std::ofstream fout(filepath);
     if (!fout.is_open()) {
-      ROS_ERROR("Unable to open %s for writing ENU origin.", filepath.c_str());
+      PCL_ERROR("Unable to open %s for writing ENU origin.", filepath.c_str());
       return false;
     }
     fout << node;
     fout.close();
-    ROS_INFO("Wrote ENU origin to %s (with UTM)", filepath.c_str());
+    PCL_ERROR("Wrote ENU origin to %s (with UTM)", filepath.c_str());
     return true;
   } catch (const std::exception& e) {
-    ROS_ERROR("Exception while writing ENU origin YAML (%s): %s", filepath.c_str(), e.what());
+    PCL_ERROR("Exception while writing ENU origin YAML (%s): %s", filepath.c_str(), e.what());
     return false;
   }
 }
@@ -190,13 +190,13 @@ bool write_enu_origin_yaml(const ENUConverter& enu, const std::string& filepath)
 bool read_enu_origin_yaml(const std::string& filepath, EnuOriginInfo& origin_info) {
   origin_info = EnuOriginInfo();
   if (filepath.empty()) {
-    ROS_ERROR("UTM offset path is empty, skip reading ENU origin.");
+    PCL_ERROR("UTM offset path is empty, skip reading ENU origin.");
     return false;
   }
   try {
     YAML::Node node = YAML::LoadFile(filepath);
     if (!node["lat"] || !node["lon"] || !node["alt"]) {
-      ROS_ERROR("Missing ENU origin fields in %s.", filepath.c_str());
+      PCL_ERROR("Missing ENU origin fields in %s.", filepath.c_str());
       return false;
     }
     origin_info.lat = node["lat"].as<double>();
@@ -215,10 +215,10 @@ bool read_enu_origin_yaml(const std::string& filepath, EnuOriginInfo& origin_inf
       origin_info.has_utm = false;
     }
 
-    ROS_INFO("Read ENU origin from %s", filepath.c_str());
+    PCL_ERROR("Read ENU origin from %s", filepath.c_str());
     return true;
   } catch (const std::exception& e) {
-    ROS_ERROR("Failed to read ENU origin YAML %s: %s", filepath.c_str(), e.what());
+    PCL_ERROR("Failed to read ENU origin YAML %s: %s", filepath.c_str(), e.what());
     return false;
   }
 }

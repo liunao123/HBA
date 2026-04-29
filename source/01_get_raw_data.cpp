@@ -476,7 +476,7 @@ int main(int argc, char **argv)
     ExtrinsicManager tf_cache;
     tf_cache.loadFolder(work_dir + "/calib/extrinsics/");
     Eigen::Matrix4d T_gnss_lidar;
-    if (tf_cache.lookupTransform("ins", "lidar", T_gnss_lidar)) {
+    if (tf_cache.lookupTransform("cgi830", "hesai128", T_gnss_lidar)) {
       q_extr = Eigen::Quaterniond(T_gnss_lidar.block<3, 3>(0, 0)).normalized();
       t_extr = T_gnss_lidar.block<3, 1>(0, 3);
     } else {

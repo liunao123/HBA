@@ -23,7 +23,10 @@
 #include <fstream>
 #include <iomanip>
 #include <map>
+#include <memory>
 #include <sstream>
+#include <algorithm>
+#include <limits>
 #include <thread>
 #include <chrono>
 #include <mutex>
@@ -49,6 +52,10 @@
 
 // Use nano_gicp instead of PCL GICP
 #include <nano_gicp/nano_gicp.h>
+// Optional fast_gicp backend
+#include <fast_gicp/gicp/fast_gicp.hpp>
+#include <fast_gicp/gicp/fast_vgicp_cuda.hpp>
+#include <patchwork/patchworkpp.h>
 // Common configuration and structures
 #include "common.hpp"
 #include "sensor.hpp"
@@ -68,15 +75,287 @@ float g_max_z = 20.0;
 float g_voxel_size = 0.15;
 
 // GICP parameters
-int g_gicp_correspondence_randomness = 128;
-float g_gicp_max_correspondence_distance = 0.50;
-int g_gicp_max_iterations = 128;
-float g_gicp_transformation_epsilon = 0.001;
-float g_gicp_rotation_epsilon = 0.001;
+int g_gicp_correspondence_randomness = 100;  // reduced for faster convergence
+float g_gicp_max_correspondence_distance = 1.0;  // increased from 0.50 to handle long-baseline pairs (typically 2-4m)
+int g_gicp_max_iterations = 64;  // reduced from 128
+float g_gicp_transformation_epsilon = 0.01;  // relaxed from 0.001
+float g_gicp_rotation_epsilon = 0.01;  // relaxed from 0.001
 float g_gicp_initial_lambda_factor = 1e-9;
+float g_gicp_fitness_threshold = 2.0;  // fitness acceptance threshold for loop closure
+
+// Temporary debug controls for outer GICP task parallelism.
+bool g_enable_multithread = true;
+int g_debug_thread_count = 8;  // <= 0 means auto, ignored when multithread is disabled.
+int g_ground_plane_max_points = 6000;
+float g_ground_max_z_correction_m = 0.05f;             // conservative per-edge z correction (5 cm)
+int g_ground_min_points_for_refine = 15000;
+float g_ground_min_points_ratio = 0.25f;
+
+std::unique_ptr<patchwork::PatchWorkpp> g_patchwork_target_instance;
+std::unique_ptr<patchwork::PatchWorkpp> g_patchwork_source_instance;
 
 std::map<std::string, cloud_ptr> pointCloudCache;
 std::mutex cacheMutex;
+
+struct GicpEdgeMeta {
+    size_t factor_index;
+    int i;
+    int j;
+    double distance;
+    double fitness;
+    bool is_adjacent;
+};
+
+double computePercentile(std::vector<double> values, double p) {
+    if (values.empty()) {
+        return std::numeric_limits<double>::quiet_NaN();
+    }
+    p = std::min(1.0, std::max(0.0, p));
+    std::sort(values.begin(), values.end());
+    const double idx = p * static_cast<double>(values.size() - 1);
+    const size_t lo = static_cast<size_t>(std::floor(idx));
+    const size_t hi = static_cast<size_t>(std::ceil(idx));
+    if (lo == hi) {
+        return values[lo];
+    }
+    const double t = idx - static_cast<double>(lo);
+    return values[lo] * (1.0 - t) + values[hi] * t;
+}
+
+Eigen::MatrixXf cloudToPatchworkMatrix(const cloud_ptr& cloud) {
+    if (!cloud || cloud->empty()) {
+        return Eigen::MatrixXf(0, 4);
+    }
+
+    Eigen::MatrixXf matrix(static_cast<int>(cloud->size()), 4);
+    for (size_t index = 0; index < cloud->size(); ++index) {
+        const auto& point = cloud->points[index];
+        matrix(static_cast<int>(index), 0) = point.x;
+        matrix(static_cast<int>(index), 1) = point.y;
+        matrix(static_cast<int>(index), 2) = point.z;
+        matrix(static_cast<int>(index), 3) = point.intensity;
+    }
+    return matrix;
+}
+
+struct GroundPlaneEstimate {
+    bool valid = false;
+    Eigen::Vector3f centroid = Eigen::Vector3f::Zero();
+    Eigen::Vector3f normal = Eigen::Vector3f::UnitZ();
+};
+
+GroundPlaneEstimate fitGroundPlane(const Eigen::MatrixX3f& ground_points) {
+    GroundPlaneEstimate estimate;
+    if (ground_points.rows() < 20) {
+        return estimate;
+    }
+
+    estimate.centroid = ground_points.colwise().mean();
+    Eigen::MatrixX3f centered = ground_points.rowwise() - estimate.centroid.transpose();
+    Eigen::Matrix3f covariance =
+        (centered.transpose() * centered) /
+        std::max(1, static_cast<int>(ground_points.rows() - 1));
+
+    Eigen::SelfAdjointEigenSolver<Eigen::Matrix3f> solver(covariance);
+    if (solver.info() != Eigen::Success) {
+        return estimate;
+    }
+
+    estimate.normal = solver.eigenvectors().col(0).normalized();
+    if (estimate.normal.z() < 0.0f) {
+        estimate.normal = -estimate.normal;
+    }
+    estimate.valid = true;
+    return estimate;
+}
+
+Eigen::MatrixX3f sampleGroundPoints(const Eigen::MatrixX3f& points, int max_points) {
+    if (points.rows() <= 0 || max_points <= 0 || points.rows() <= max_points) {
+        return points;
+    }
+
+    Eigen::MatrixX3f sampled(max_points, 3);
+    const int total_rows = static_cast<int>(points.rows());
+    const int max_idx = total_rows - 1;
+    const float step = static_cast<float>(max_idx) / static_cast<float>(max_points - 1);
+    for (int i = 0; i < max_points; ++i) {
+        const int idx = std::min(max_idx, static_cast<int>(std::round(i * step)));
+        sampled.row(i) = points.row(idx);
+    }
+    return sampled;
+}
+
+GroundPlaneEstimate fitGroundPlaneSafe(const Eigen::MatrixX3f& ground_points) {
+    GroundPlaneEstimate estimate;
+    if (ground_points.rows() < 20) {
+        return estimate;
+    }
+
+    // Filter out invalid rows first to avoid Eigen numerical issues.
+    std::vector<Eigen::Vector3f> valid_points;
+    valid_points.reserve(static_cast<size_t>(ground_points.rows()));
+    for (int i = 0; i < ground_points.rows(); ++i) {
+        const Eigen::Vector3f p = ground_points.row(i).transpose();
+        if (std::isfinite(p.x()) && std::isfinite(p.y()) && std::isfinite(p.z())) {
+            valid_points.push_back(p);
+        }
+    }
+
+    if (valid_points.size() < 20) {
+        return estimate;
+    }
+
+    Eigen::Vector3f centroid = Eigen::Vector3f::Zero();
+    for (const auto& p : valid_points) {
+        centroid += p;
+    }
+    centroid /= static_cast<float>(valid_points.size());
+
+    Eigen::Matrix3f covariance = Eigen::Matrix3f::Zero();
+    for (const auto& p : valid_points) {
+        const Eigen::Vector3f d = p - centroid;
+        covariance += d * d.transpose();
+    }
+    covariance /= std::max(1.0f, static_cast<float>(valid_points.size() - 1));
+
+    Eigen::SelfAdjointEigenSolver<Eigen::Matrix3f> solver(covariance);
+    if (solver.info() != Eigen::Success) {
+        return estimate;
+    }
+
+    estimate.centroid = centroid;
+    estimate.normal = solver.eigenvectors().col(0).normalized();
+    if (estimate.normal.z() < 0.0f) {
+        estimate.normal = -estimate.normal;
+    }
+    estimate.valid = true;
+    return estimate;
+}
+
+Eigen::Vector2f normalToRollPitch(const Eigen::Vector3f& n_in) {
+    Eigen::Vector3f n = n_in;
+    if (n.norm() < 1e-6f) {
+        return Eigen::Vector2f::Zero();
+    }
+    n.normalize();
+    // Roll/pitch induced by ground tilt. We intentionally ignore yaw.
+    const float roll = -std::atan2(n.y(), std::max(1e-6f, n.z()));
+    const float pitch = std::atan2(n.x(), std::max(1e-6f, n.z()));
+    return Eigen::Vector2f(roll, pitch);
+}
+
+float medianOf(std::vector<float>& values) {
+    if (values.empty()) {
+        return std::numeric_limits<float>::quiet_NaN();
+    }
+    const size_t mid = values.size() / 2;
+    std::nth_element(values.begin(), values.begin() + mid, values.end());
+    float med = values[mid];
+    if (values.size() % 2 == 0 && mid > 0) {
+        auto max_it = std::max_element(values.begin(), values.begin() + mid);
+        med = 0.5f * (med + *max_it);
+    }
+    return med;
+}
+
+Eigen::MatrixX3f transformPoints(const Eigen::MatrixX3f& points, const Eigen::Matrix4f& transform) {
+    if (points.rows() == 0) {
+        return Eigen::MatrixX3f(0, 3);
+    }
+
+    Eigen::MatrixX3f transformed(points.rows(), 3);
+    const Eigen::Matrix3f rotation = transform.block<3, 3>(0, 0);
+    const Eigen::Vector3f translation = transform.block<3, 1>(0, 3);
+    for (int i = 0; i < points.rows(); ++i) {
+        transformed.row(i) = (rotation * points.row(i).transpose() + translation).transpose();
+    }
+    return transformed;
+}
+
+ 
+
+void printGicpResidualDistribution(const NonlinearFactorGraph& graph,
+                                   const Values& values,
+                                   const std::vector<GicpEdgeMeta>& edges,
+                                   const std::string& tag) {
+    std::vector<double> all_err;
+    std::vector<double> adj_err;
+    std::vector<double> loop_err;
+    struct EdgeErr {
+        double err;
+        GicpEdgeMeta meta;
+    };
+    std::vector<EdgeErr> edge_errs;
+
+    for (const auto& e : edges) {
+        if (e.factor_index >= graph.size()) {
+            continue;
+        }
+        const auto& factor = graph[e.factor_index];
+        if (!factor) {
+            continue;
+        }
+        const double err = factor->error(values);
+        if (!std::isfinite(err)) {
+            continue;
+        }
+        all_err.push_back(err);
+        if (e.is_adjacent) {
+            adj_err.push_back(err);
+        } else {
+            loop_err.push_back(err);
+        }
+        edge_errs.push_back({err, e});
+    }
+
+    auto print_one = [&](const std::vector<double>& data, const std::string& name) {
+        if (data.empty()) {
+            std::cout << "  [" << name << "] empty" << std::endl;
+            return;
+        }
+        double sum = 0.0;
+        double min_v = std::numeric_limits<double>::infinity();
+        double max_v = -std::numeric_limits<double>::infinity();
+        for (double v : data) {
+            sum += v;
+            min_v = std::min(min_v, v);
+            max_v = std::max(max_v, v);
+        }
+        const double mean = sum / static_cast<double>(data.size());
+        std::cout << std::fixed << std::setprecision(6)
+                  << "  [" << name << "] n=" << data.size()
+                  << " mean=" << mean
+                  << " min=" << min_v
+                  << " p50=" << computePercentile(data, 0.50)
+                  << " p90=" << computePercentile(data, 0.90)
+                  << " p95=" << computePercentile(data, 0.95)
+                  << " max=" << max_v
+                  << std::endl;
+    };
+
+    std::cout << "\n========== GICP Edge Residual Distribution (" << tag << ") ==========" << std::endl;
+    print_one(all_err, "all");
+    print_one(adj_err, "adjacent");
+    print_one(loop_err, "loop");
+
+    std::sort(edge_errs.begin(), edge_errs.end(), [](const EdgeErr& a, const EdgeErr& b) {
+        return a.err > b.err;
+    });
+    const size_t top_n = std::min<size_t>(10, edge_errs.size());
+    std::cout << "  Top " << top_n << " largest residual edges:" << std::endl;
+    for (size_t k = 0; k < top_n; ++k) {
+        const auto& x = edge_errs[k];
+        std::cout << std::fixed << std::setprecision(6)
+                  << "    #" << (k + 1)
+                  << " err=" << x.err
+                  << " pair=(" << x.meta.i << ", " << x.meta.j << ")"
+                  << " dist=" << x.meta.distance
+                  << " fitness=" << x.meta.fitness
+                  << " type=" << (x.meta.is_adjacent ? "adj" : "loop")
+                  << std::endl;
+    }
+    std::cout << "===============================================================\n" << std::endl;
+}
 
 // 将优化后的 ENU 轨迹转到 UTM，并保存为 TUM 文件
 std::vector<TumPose> to_utm_pose(const std::vector<TumPose> &opt_enu_poses, const std::string &temp_file_dir)
@@ -385,7 +664,6 @@ std::vector<TumPose>  saveTUMTrajectory(const Values &values, const string &file
     return opt_poses;
 }
 
- 
 
 // Helper: convert gtsam::Pose3 to Eigen::Matrix4f
 Eigen::Matrix4f pose3ToEigenMatrix4f(const gtsam::Pose3 &p)
@@ -630,7 +908,7 @@ bool runGICPGetRelative(const cloud_ptr &target,
     std::string savePCDDirectory = "./loop_closure/";
     mkdir((savePCDDirectory).c_str(), 0777);
     int my_cnt = cnt.fetch_add(1);  // atomic post-increment; read once
-    if (my_cnt % 500 == 0)
+    if (my_cnt % 100 == 0)
     {
         std::lock_guard<std::mutex> save_lk(save_mutex);
         // std::cout << "debug file save to savePCDDirectory: " << savePCDDirectory << std::endl;   
@@ -638,12 +916,107 @@ bool runGICPGetRelative(const cloud_ptr &target,
         pcl::io::savePCDFileBinary(savePCDDirectory + std::to_string(my_cnt) + "prevKeyframeCloud.pcd", *target);
         pcl::io::savePCDFileBinary(savePCDDirectory + std::to_string(my_cnt) + "cureKeyframeCloud.pcd_" + std::to_string(out_fitness), *source);
         // 判断final_tf与init_guess的差异，若过大则认为未收敛
-        // std::cout << "init_guess: \n" << init_guess << std::endl;   
-        // std::cout << "final_tf: \n" << final_tf << std::endl;   
+        Eigen::IOFormat fmt3(3, 0, ", ", "\n", "[", "]");
+        std::cout << "init_guess: \n" << init_guess.format(fmt3) << std::endl;   
+        std::cout << "final_tf: \n" << final_tf.format(fmt3) << std::endl;   
     }
     return true;
 } 
 
+// Run FastGICP between two clouds, return transform mapping source->target and fitness score
+bool runFastGICPGetRelative(const cloud_ptr &target,
+                            const cloud_ptr &source,
+                            const Eigen::Matrix4f &init_guess,
+                            Eigen::Matrix4f &out_T,
+                            double &out_fitness,
+                            int max_iter = 50)
+{
+    if (!target || !source)
+    {
+        ROS_WARN("runFastGICPGetRelative: null cloud pointer");
+        return false;
+    }
+
+    bool finite = true;
+    for (int r = 0; r < 4 && finite; ++r)
+        for (int c = 0; c < 4 && finite; ++c)
+            if (!std::isfinite(init_guess(r, c)))
+                finite = false;
+    if (!finite)
+    {
+        ROS_WARN("runFastGICPGetRelative: init_guess contains non-finite values");
+        return false;
+    }
+
+    cloud_ptr target_ds(new pcl::PointCloud<pointtype>());
+    cloud_ptr source_ds(new pcl::PointCloud<pointtype>());
+    applyAdvancedVoxelFilter(*source, *source_ds);
+    applyAdvancedVoxelFilter(*target, *target_ds);
+
+    if (target_ds->empty() || source_ds->empty())
+    {
+        ROS_WARN("runFastGICPGetRelative: empty downsampled cloud (target=%zu, source=%zu)",
+                 target_ds->size(), source_ds->size());
+        return false;
+    }
+
+    fast_gicp::FastVGICPCuda<pointtype, pointtype> gicp;
+    gicp.setResolution(1.0);
+    // Use CPU KDTree instead of GPU_BRUTEFORCE for better correspondence quality
+    gicp.setNearestNeighborSearchMethod(fast_gicp::NearestNeighborMethod::CPU_PARALLEL_KDTREE);
+
+    gicp.setCorrespondenceRandomness(g_gicp_correspondence_randomness);
+    gicp.setMaxCorrespondenceDistance(g_gicp_max_correspondence_distance);
+    gicp.setMaximumIterations(max_iter > 0 ? max_iter : g_gicp_max_iterations);
+    gicp.setTransformationEpsilon(g_gicp_transformation_epsilon);
+    gicp.setRotationEpsilon(g_gicp_rotation_epsilon);
+    gicp.setInitialLambdaFactor(g_gicp_initial_lambda_factor);
+    gicp.setRegularizationMethod(fast_gicp::RegularizationMethod::PLANE);
+    gicp.setInputSource(source_ds);
+    gicp.setInputTarget(target_ds);
+
+    pcl::PointCloud<pointtype> final_cloud;
+    gicp.align(final_cloud, init_guess);
+
+    // Accept both converged results and results with good fitness score
+    double fitness = gicp.getFitnessScore();
+    bool converged = gicp.hasConverged();
+    
+    // For loop closure, accept either: (1) formally converged OR (2) good fitness score
+    // if (!converged && fitness > g_gicp_fitness_threshold)
+    // {
+    //     ROS_INFO("FastGICP: fitness=%.6f (accepted by threshold, not formally converged)", fitness);
+    //     // Still accept this result for loop closure
+    // }
+    // else 
+    if (!converged)
+    {
+        ROS_INFO("FastGICP did not converge (fitness=%f)", fitness);
+        return false;
+    }
+
+    out_T = gicp.getFinalTransformation();
+    out_fitness = gicp.getFitnessScore();
+
+    static std::atomic<int> cnt{0};
+    static std::mutex save_mutex;
+    std::string savePCDDirectory = "./loop_closure/";
+    mkdir((savePCDDirectory).c_str(), 0777);
+    int my_cnt = cnt.fetch_add(1);
+    if (my_cnt % 100 == 0)
+    {
+        std::lock_guard<std::mutex> save_lk(save_mutex);
+        pcl::io::savePCDFileBinary(savePCDDirectory + std::to_string(my_cnt) + "fast_unused_result.pcd", final_cloud);
+        pcl::io::savePCDFileBinary(savePCDDirectory + std::to_string(my_cnt) + "fast_prevKeyframeCloud.pcd", *target);
+        pcl::io::savePCDFileBinary(savePCDDirectory + std::to_string(my_cnt) + "fast_cureKeyframeCloud.pcd_" + std::to_string(out_fitness), *source);
+
+        // Eigen::IOFormat fmt3(3, 0, ", ", "\n", "[", "]");
+        // std::cout << "fast init_guess: \n" << init_guess.format(fmt3) << std::endl;
+        // std::cout << "fast final_tf: \n" << out_T.format(fmt3) << std::endl;
+    }
+
+    return true;
+}
 
 
 void pts_to_world(const cloud_ptr &pts_local,
@@ -780,13 +1153,21 @@ int main(int argc, char **argv)
     LidarGnssExtrinsic extrinsic;
     {
         Eigen::Matrix4d T_gnss_lidar;
-        if (!tf_cache.lookupTransform("gnss", "hesai128", T_gnss_lidar)) {
+        if (tf_cache.lookupTransform("cgi830", "hesai128", T_gnss_lidar)) {
+           std::cout << "[Extrinsic] OK to lookup lidar to  ins " << std::endl;
+        }
+        else
+        {
             std::cerr << "[Extrinsic] Failed to lookup gnss <- hesai128, using identity!" << std::endl;
             T_gnss_lidar = Eigen::Matrix4d::Identity();
         }
         extrinsic.q = Eigen::Quaterniond(T_gnss_lidar.block<3, 3>(0, 0)).normalized();
         extrinsic.t = T_gnss_lidar.block<3, 1>(0, 3);
     }
+    std::cout << "[Extrinsic] ===========================" << std::endl;
+    std::cout << extrinsic.q.coeffs() << std::endl;
+    std::cout << extrinsic.t.transpose() << std::endl;
+    std::cout << "[Extrinsic] ===========================" << std::endl;
 
     // Get all YAML files from gnss_odoms_path directory
     std::string gnss_odoms_path =  work_dir + "/odoms";
@@ -921,11 +1302,23 @@ int main(int argc, char **argv)
             }
 
             gtsam::Pose3 rel_init = pi.inverse() * pj;
+
+            auto init_guess = pose3ToEigenMatrix4f(rel_init);
+            if( std::abs(j - i) == 1)
+            {
+                // 相邻的帧直接加进去
+            }
+            else
+            {
+                if (init_guess.block<3, 1>(0, 3).norm() > gicp_distance_threshold)
+                   continue;
+            }
+            
             gicp_tasks.push_back({
                 i, j,
                 pose_i.timestamp, pose_j.timestamp,
                 distance,
-                pose3ToEigenMatrix4f(rel_init)
+                init_guess
             });
         }
     }
@@ -954,8 +1347,19 @@ int main(int argc, char **argv)
     }
     
     std::atomic<int> task_idx{0};
-    const int n_threads = static_cast<int>(std::max(1u, std::thread::hardware_concurrency()));
-    std::cout << "Running GICP with " << n_threads << " threads..." << std::endl;
+    const unsigned hw_threads = std::max(1u, std::thread::hardware_concurrency());
+    int n_threads = 1;
+    if (g_enable_multithread) {
+        n_threads = (g_debug_thread_count > 0)
+                        ? g_debug_thread_count
+                        : static_cast<int>(hw_threads) / 2;
+    }
+    n_threads = std::max(1, n_threads);
+    n_threads = std::min(n_threads, std::max(1, static_cast<int>(gicp_tasks.size())));
+    std::cout << "Running GICP with " << n_threads
+              << " threads (multithread=" << (g_enable_multithread ? "on" : "off")
+              << ", requested=" << g_debug_thread_count
+              << ", hw=" << hw_threads << ")..." << std::endl;
     
     // 获取PCD文件路径列表
     std::vector<std::string> pcd_files = convertYamlPathsToPcdPaths(gnss_odom_files, pointclouds_path);
@@ -1031,9 +1435,26 @@ int main(int argc, char **argv)
                 report_progress(task_ns);
                 continue;
             }
+
+            // if (task.init_guess.block<3, 1>(0, 3).norm() > gicp_distance_threshold)
+            // {
+            //     const auto task_end = std::chrono::steady_clock::now();
+            //     const long long task_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(task_end - task_begin).count();
+            //     report_progress(task_ns);
+            //     continue;
+            // }
             
             // 运行GICP
-            res.ok = runGICPGetRelative(cloud_i, cloud_j, task.init_guess, res.Tij, res.fitness, loop_config.max_iter);
+            // res.ok = runGICPGetRelative(cloud_i, cloud_j, task.init_guess, res.Tij, res.fitness, loop_config.max_iter);
+            
+            res.ok = runFastGICPGetRelative(cloud_i, cloud_j, task.init_guess, res.Tij, res.fitness, loop_config.max_iter);
+
+            if (!res.ok) {
+                std::cout << "GICP failed for pair (" << task.i << ", " << task.j << ") with distance " << task.distance << "m" << std::endl;
+            } else {
+                // std::cout << "GICP succeeded for pair (" << task.i << ", " << task.j << ") with distance " << task.distance 
+                //           << "m, fitness=" << res.fitness << std::endl;
+            }
             const auto task_end = std::chrono::steady_clock::now();
             const long long task_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(task_end - task_begin).count();
             report_progress(task_ns);
@@ -1041,12 +1462,16 @@ int main(int argc, char **argv)
     };
     
     std::vector<std::thread> gicp_threads;
-    gicp_threads.reserve(n_threads);
-    for (int t = 0; t < n_threads; ++t) {
-        gicp_threads.emplace_back(gicp_worker);
-    }
-    for (auto &thr : gicp_threads) {
-        thr.join();
+    if (n_threads == 1) {
+        gicp_worker();
+    } else {
+        gicp_threads.reserve(n_threads);
+        for (int t = 0; t < n_threads; ++t) {
+            gicp_threads.emplace_back(gicp_worker);
+        }
+        for (auto &thr : gicp_threads) {
+            thr.join();
+        }
     }
     const double total_elapsed_sec = std::chrono::duration<double>(std::chrono::steady_clock::now() - gicp_start_time).count();
     std::cout << "\rProcessing GICP: 100% (" << gicp_tasks.size() << "/" << gicp_tasks.size()
@@ -1057,9 +1482,10 @@ int main(int argc, char **argv)
     // Phase 3: 将成功的GICP结果添加到因子图
     int successful_gicp = 0;
     int failed_gicp = 0;
+    std::vector<GicpEdgeMeta> gicp_edge_meta;
+    gicp_edge_meta.reserve(gicp_results.size());
 
-    
-    for (const auto &res : gicp_results) {
+    for (auto &res : gicp_results) {
         if (res.ok) {
             const Key ki = static_cast<Key>(res.i);
             const Key kj = static_cast<Key>(res.j);
@@ -1075,7 +1501,16 @@ int main(int argc, char **argv)
             // std::cout << "  Added constraint: "   << " -> " << res.Tij << std::endl;
 
             gtsam::Pose3 meas = eigenMatrix4fToPose3(res.Tij);
+            const size_t factor_index = graph.size();
             graph.add(BetweenFactor<Pose3>(ki, kj, meas, gicpNoise));
+            gicp_edge_meta.push_back({
+                factor_index,
+                res.i,
+                res.j,
+                res.distance,
+                res.fitness,
+                (std::abs(res.j - res.i) <= min_key_diff)
+            });
             successful_gicp++;
             
             // if (successful_gicp % 100 == 0) {
@@ -1085,6 +1520,7 @@ int main(int argc, char **argv)
         } else {
             failed_gicp++;
         }
+
     }
     
     std::cout << "\n========== GICP Constraint Summary ==========" << std::endl;
@@ -1115,11 +1551,13 @@ int main(int argc, char **argv)
               << ", abs=" << params_lm.absoluteErrorTol << std::endl;
     std::cout << "  ✓ Robust to weight conflicts and bad loop closures" << std::endl;
     std::cout << "========================================================\n" << std::endl;
+    printGicpResidualDistribution(graph, initial, gicp_edge_meta, "before optimization");
 
     gtsam::LevenbergMarquardtOptimizer optimizer_LM(graph, initial, params_lm);
     Values result = optimizer_LM.optimize();
 
     std::cout << "Optimization complete" << std::endl;
+    printGicpResidualDistribution(graph, result, gicp_edge_meta, "after optimization");
 
     // write optimized graph to g2o file
     if (!output_g2o_file.empty())
