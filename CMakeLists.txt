@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.0.2)
+cmake_minimum_required(VERSION 3.2)
 project(hba)
 
 set(CMAKE_BUILD_TYPE "Release")
@@ -39,14 +39,14 @@ find_package(catkin REQUIRED COMPONENTS
 find_package(OpenCV REQUIRED)
 
 # Force PCL 1.15 from /usr/local to avoid mixing with system PCL 1.12.
-if (EXISTS "/usr/local/share/pcl-1.15/PCLConfig.cmake")
-  set(PCL_DIR "/usr/local/share/pcl-1.15" CACHE PATH "PCL CMake config directory" FORCE)
-endif()
+# if (EXISTS "/usr/local/share/pcl-1.15/PCLConfig.cmake")
+#   set(PCL_DIR "/usr/local/share/pcl-1.15" CACHE PATH "PCL CMake config directory" FORCE)
+# endif()
 
 
 # 02_Pose3SLAMExample_g2o 需要PCL 1.15，否则编译没问题，运行会崩溃
-find_package(PCL 1.15 REQUIRED) 
-# find_package(PCL  REQUIRED) 
+# find_package(PCL 1.15 REQUIRED) 
+find_package(PCL  REQUIRED) 
 
 
 # find_package(PCL REQUIRED)
@@ -148,9 +148,9 @@ target_link_libraries(01_get_raw_data
 )
 
 
-set(FAST_GICP_CUDA_LIB_DIR "/home/xf/Documents/fast_gicp/build/devel/lib")
-set(PATCHWORKPP_INCLUDE_DIR "/home/xf/Documents/patchwork-plusplus/cpp/patchworkpp/include")
-set(PATCHWORKPP_SOURCE "/home/xf/Documents/patchwork-plusplus/cpp/patchworkpp/src/patchworkpp.cpp")
+# set(FAST_GICP_CUDA_LIB_DIR "/home/xf/Documents/fast_gicp/build/devel/lib")
+# set(PATCHWORKPP_INCLUDE_DIR "/home/xf/Documents/patchwork-plusplus/cpp/patchworkpp/include")
+# set(PATCHWORKPP_SOURCE "/home/xf/Documents/patchwork-plusplus/cpp/patchworkpp/src/patchworkpp.cpp")
 
 include_directories(${PATCHWORKPP_INCLUDE_DIR})
 
@@ -175,19 +175,19 @@ set_target_properties(02_Pose3SLAMExample_g2o PROPERTIES
   BUILD_RPATH "${FAST_GICP_CUDA_LIB_DIR}"
 )
 
-add_executable(02_refined_ground
-  source/02_refined_ground.cpp
-  ${PATCHWORKPP_SOURCE}
-)
+# add_executable(02_refined_ground
+#   source/02_refined_ground.cpp
+#   ${PATCHWORKPP_SOURCE}
+# )
 
-target_link_libraries(02_refined_ground
-  ${catkin_LIBRARIES} 
-  ${PCL_LIBRARIES}  
-  nano_gicp_lib
-  yaml-cpp
-  gtsam
-  Geographic
-)
+# target_link_libraries(02_refined_ground
+#   ${catkin_LIBRARIES} 
+#   ${PCL_LIBRARIES}  
+#   nano_gicp_lib
+#   yaml-cpp
+#   gtsam
+#   Geographic
+# )
 
 
 add_executable(pub_pose_and_pts source/pub_pose_and_pts.cpp)
@@ -299,3 +299,11 @@ include_directories(
   ${YAML_CPP_INCLUDE_DIRS}
 )
 
+# 环视 7 路相机 -> BEV 鸟瞰图 (IPM)
+add_executable(get_bev_img source/get_bev_img.cpp)
+target_link_libraries(get_bev_img
+  ${catkin_LIBRARIES}
+  ${OpenCV_LIBRARIES}
+  Eigen3::Eigen
+  yaml-cpp
+)

@@ -1,0 +1,396 @@
+# =============================================================================
+# local_align --incr 增量建图: **run_main.sh 用的参数** (123 项, 全部显式给出)
+#     cd incremental_align && ./run_incr.sh params/main.yaml
+# 命令行选项在 yaml 之后应用 = 覆盖:
+#     ./run_incr.sh params/main.yaml --region_step 50
+#
+# 这份文件是从 run_main.sh 里那 190 行命令行**等价迁移**过来的 —— 值一个没动,
+# 每个参数的实测注释也跟着搬过来了(下面那些以 # 起头的多行块)。
+#
+# 与上面 incremental_align(glim 主程序)的区别: 这里**没有 submap 这一层**。每个关键帧一个
+# 位姿变量, 同 session 内建帧间/回环约束, 跨 session 用 scan-to-submap (前面所有 session
+# 拼 target, 新 session 逐帧配上去)。submap 只是配准时临时拼的 target, 不是优化变量。
+#
+# 增量的含义: 已优化的 session 的**位姿和约束都存档**, 下次直接复用不重算; 但它们的位姿
+# 仍参与最终联合优化 —— 钉死会让新 session 只能单方面往老的上凑(实测 jjst2<->jjst3
+# 从 0.083 退化到 0.095), 而放开几乎不要钱(稀疏图解一次是秒级, 成本全在配准)。
+#
+# !! 这套值是**这一轮改进之前**的状态。与 params/full.yaml (最近一次全量跑, 已验证)
+#    相差 20 项, 其中这 8 类是**实测有效**的改进, 这份文件里还是关着的:
+#      cross_ba 0->1          target 端先联合局部 BA 再拼: target 自重影 0.10~0.14 -> 0.058
+#      cross_per_sess 0->1    对**每个**之前的 session 各建一条边 (漏了 jjst5 的 924 条)
+#      b_bidir 0->1           收反向共位。路口两条腿航向 -33.5 vs +146, 原来一条约束都没有
+#      loop_min_arc 0->50     里程门。原来采纳的"同向回环"全是红灯停车的零基线帧对
+#      loop_submap 0->5       回环用 submap2submap + 局部 BA: 自重影 0.143->0.080, nn 0.204->0.119
+#      loop_sigma_t/r 0->     0.050 / 0.0028, --calib_rounds 的白化 rms 收敛值
+#      nms_loop/nms_cross     四维 NMS 去重, 约束分布均匀: 单格最多 129 条 -> 12 条
+#      nms_win_deltas         窗口边只留 1,5,20,40 这几个间隔: GICP 候选 7372 -> 1192 (-84%)
+#    另外 region_step 100->50 也实测更好(区域 9->16, 区域内 nn 0.075->0.058, 耗时仅 +12%)。
+#    要用已验证的那套, 直接 ./run_incr.sh params/full.yaml。
+#
+# 剩下的差异是**有意不同**的, 不是遗漏:
+#      sess_order  这份写死四个 session 名; full.yaml 留空 = 目录里有多少就跑多少
+#      raw_export  这份导 (475,-759) 那块 60m 的原始点; full.yaml 不导
+#      color_drop  这份 0 = 没上到色的点涂深灰保留; full.yaml 1 = 丢掉
+#      dump_cross  这份 500 帧; full.yaml 60
+#
+# 每行的 # 是一行摘要, 和 --help 是同一句话; 参数上方的多行块是实测记录。
+# =============================================================================
+root: "/media/tyjt/Elements/WG_wuling/incremental_mapping"  # 数据根目录
+out: "/mnt/nvme0n1p2/ialign_out/j2any/"  # 输出目录
+
+# clips | keyframe
+data_mode: "clips"              # clips | keyframe (默认 clips)
+
+# egomotions | localized。必须 egomotions:
+# localized 的 orientation 四元数是坏的(与自身 euler 差中位 4.44°/最大 25.5°)
+pose_dir: "egomotions"          # clips: egomotions | localized (默认 localized)
+
+# quat | euler。egomotions 配 quat 是验证过的组合
+attitude_from: "quat"           # quat | euler (默认 euler)
+
+# sensors/ 下用哪个雷达。fuse_lidar 与 front_lidar 的外参逐比特相同
+lidar_dir: "fuse_lidar"         # clips: sensors/ 下哪个雷达 (默认 fuse_lidar)
+
+# 只在 data_mode=keyframe 时生效 (sparse | odoms)
+pose_src: "sparse"              # keyframe: sparse | odoms (默认 sparse)
+sa: 0                           # A 的 session 下标。**只有非增量的单点模式用**, --incr 下无效
+sb: 1                           # B 的 session 下标。**只有非增量的单点模式用**, --incr 下无效
+cx: 0                           # 邻域中心 x (命令行 --center x,y)。**只有非增量的单点模式用**, --incr 下无效
+cy: 0                           # 邻域中心 y (命令行 --center x,y)。**只有非增量的单点模式用**, --incr 下无效
+radius: 30                      # 邻域半径, A 取 submap 用。**只有非增量的单点模式用**
+b_radius: 30                    # B 取待配准帧的半径。**只有非增量的单点模式用**
+
+# ---- 按'B 帧位姿 vs 拼 submap 用到的 A 关键帧位姿'的关系筛 ----
+
+# 新 session 的帧到最近**同向**参照帧的距离上限(m)。
+# [实测] 轨迹间距是**双峰**的: 要么几米内(已建约束), 要么直接跳到上百米
+# (jjst3 到最近同向参照帧中位 176m!)。5->10 只多捞 50 帧,
+# 中间那个区间本来就没有帧 —— 想靠放宽阈值把"没重叠"变成"有重叠"是造假约束
+b_max_dist: 10                  # B 帧到**最近的 A 关键帧**的距离上限 (默认 5, <=0 关闭)
+
+# 航向差上限(度)。放宽距离后**必须**配这个, 否则反向行驶的帧会进来
+b_max_dyaw: 30                  # 与最近 A 关键帧的航向差上限 (默认 180 = 关闭; 分布照样打印)
+b_bidir: 0                      # 跨session 是否也收**反向**共位 (航向差 >= 180 - b_max_dyaw)。默认 0。
+cross_per_sess: 0               # 1 = 每个被并入帧对**每个**之前的 session 各建一条边 (默认 0 = 只对最近的那个)
+
+# ---- 跨 session 配准: 两端都先做局部 BA, 再 submap2submap ----
+cross_ba: 0                     # 目标端 submap 先做一次**联合局部 BA** 再拼 (默认 0)。
+cross_ba_edges: 1               # 目标端 BA 产出的**跨session** ref<->ref 相对位姿也发成约束 (默认 1)。
+cross_ba_max: 40                # 目标端做 BA 的帧数上限 (默认 80)。150 帧同时带协方差+体素图约 1.2GB。
+cross_src_win: 5                # 源端也取当前帧 +-n 帧拼 submap (先局部 BA), 做 submap2submap (默认 0=单帧)。
+
+# 单帧体素(m)。[实测] 0.10 -> 0.05 让墙面厚度从 0.117 降到 0.071 (-40%)。
+# 那 0.117 里很大一部分是**体素量化**: 真实几厘米厚的墙被 0.1 网格切成
+# 沿法向 2~3 层格心, 量出来的"厚度"就是体素尺度本身。
+frame_voxel: 0.05               # 单帧体素 (默认 0.25)
+
+# 拼 submap / 导出成图的体素(m) = target 点间距。与 frame_voxel 同量级
+submap_voxel: 0.05              # submap 体素 = target 点间距 (默认 0.15)
+
+# 距离下限(m), 去车身
+min_range: 5                    # 单帧点的最小距离 (m), <=0 = 关闭
+
+# 距离上限(m)。[实测] 厚度与离轨迹距离几乎无关(0-10m 0.099 / 30-50m 0.109),
+# 所以收紧量程对厚度**没有**帮助, 只是少一些远处稀疏噪点
+max_range: 40                   # 单帧点的最大距离 (m), <=0 = 关闭
+
+# target 体素图分辨率(m)。**必须 >= 3 x max(frame_voxel, submap_voxel)**:
+# 体素图比点间距还稀时, 源点必须落进与 target 点同一个格才算 inlier ->
+# 无论对齐多好 inlier 都塌到 0.2 量级, 帧全被剔, 而日志看不出异常。
+# 程序启动时有自检会打印警告。
+tgt_voxel: 0.9                  # target 体素图分辨率 (默认 0.9)
+
+# scan-to-submap 的 VGICP 迭代次数
+iters: 20                       # VGICP 迭代 (默认 20)
+fine: true                      # 1 = 做第二段 GICP 精化 (默认开; VGICP 的精度上限是体素尺度)。--no_fine 关
+
+# GICP 精化的最大对应距离(m)。VGICP 的精度上限是体素尺度,
+# 所以后面必须接一段用真实 KdTree 的 GICP
+fine_corr: 0.5                  # GICP 最大对应距离 (默认 0.5)
+
+# GICP 精化迭代次数 (要关掉加 --no_fine)
+fine_iters: 15                  # 第二段 GICP 精化的迭代次数
+
+# 采纳阈值
+min_inlier: 0.4                 # 采纳阈值 (默认 0.4)
+
+# 水平修正上限(m)
+max_corr: 2                     # 水平修正上限 (默认 2.0)
+
+# 地面以上多少米算竖直结构(m)。nn 一律只用地面以上的点 ——
+# 全部点的最近邻对路面沿面滑动是瞎的, [实测] 低估约一倍
+# (要采纳完整 6-DOF 加 --no_clamp; 默认压制 z/roll/pitch 取 INS)
+z_above: 0.5                    # 量 nn 时只统计**高于地面** z_above 的点 (m) —— 路面点会把差异平均掉
+clamp_planar: true              # 1 = 平面压制: z/roll/pitch 取 INS 不动 (默认开)。--no_clamp 关
+dyn_filter: true                # 1 = 剔动态物体 (clips 用 annotations/3dod 的 3D 框, 默认开)。--no_dyn_filter 关
+
+# 动态框与点云的时间戳容差(s)。动态点在**体素滤波之前**剔 ——
+# 滤波会把车上的点和背景平均进同一格, 之后再删只剩被污染的格心
+# (要关掉动态剔除加 --no_dyn_filter, 但那样 target 里会留车的残影)
+dyn_ts_tol: 0.02                # 动态框与点云的时间戳容差 (默认 0.02)
+
+# 单锚点模式才用: 最多存多少帧的前后点云+图
+dump_max: 200                   # 最多存多少帧的前后点云+图 (默认 200)
+num_threads: 10                 # 线程数 (默认 6)
+scan_overlap: false             # 只扫两条轨迹的共位情况然后退出, 不做配准。
+scan_step: 150                  # --scan 沿轨迹的采样步长 (m)
+
+# ---- A 的 submap 内部 BA (Ceres: INS 先验 + 帧间 GICP + 视觉重投影) ----
+ba: true                        # 对 A 的邻域帧做**submap 内部 BA** 再拼 submap (默认关)
+
+# 建约束的最小重叠率 (overlap_auto)
+ba_min_overlap: 0.2             # 帧间建约束的最小重叠率 (默认 0.2)
+
+# 帧间 VGICP 的体素图分辨率(m)
+ba_pair_voxel: 0.9              # BA 内帧间 GICP 的体素 (m)
+
+# 帧间/回环 VGICP 的 LM 迭代次数
+ba_pair_iters: 20               # 帧间/回环 VGICP 的 LM 迭代次数 (默认 20)
+
+# 帧间测量的修正上限(m), 超了不要这条约束(大概率配错了)
+ba_max_corr: 1                  # BA 内建帧间约束的最大帧间距离 (m), 超过就不建这条边
+
+# ---- 以下默认值由**白化残差实测**校准而来, 不是拍的 ----
+
+# INS 位置先验 sigma(m)。**这是抵抗整图共模漂移的唯一力量**。
+# [实测] 信息量对抗: 先验 10610 条 x 1/0.15² = 4.7e5 vs 跨 session
+# 3103 条 x 1/0.09² = 3.8e5 -> 跨 session 只占 45%, 一个 session
+# 最多朝对齐方向挪不到一半的路。session 越多这个比例越向对齐倾斜。
+ba_ins_xy: 0.15                 # INS 位置软锚 sigma (默认 0.40, 实测校准值)
+
+# 帧间相对位姿平移 sigma(m)。[实测] 这 3.5cm 就是关键帧↔关键帧的
+# 配准可重复性; 之前沿用的 0.20m 是 submap↔submap 的数, 大了 6 倍
+ba_rel_t: 0.035                 # 帧间相对位姿平移 sigma (默认 0.035, 实测校准值)
+
+# 帧间旋转 sigma(rad) [实测校准]
+ba_rel_r: 0.002                 # 帧间旋转 sigma (默认 0.002, 实测校准值)
+
+# 姿态先验权重。[实测校准] 原来的 50 偏轻 5.5 倍。
+# 重力分解后只约束 roll/pitch, yaw 自由
+ba_att_w: 275                   # 姿态先验权重 (默认 275, 实测校准值; 原 50 偏轻 5.5 倍)
+
+# 帧间约束的 Huber 核宽度
+ba_huber: 1                     # Ceres 的 Huber 阈值 (0 = 不用鲁棒核)
+
+# >0 时按卡方阈值剔异常帧间约束后再解一轮 (默认关)
+ba_chi2: 0                      # >0 时按卡方阈值剔除异常帧间约束后再解一轮 (默认 0)
+
+# Ceres 迭代次数
+ba_iters: 50                    # Ceres 迭代上限
+ba_visual: false                # BA 里再加视觉重投影约束 (隐含 --ba)
+ba_sigma_px: 3.6                # 视觉重投影的 sigma, 单位像素 (默认 3.6, 实测校准值)
+vis_cams: ""                    # 视觉用哪些相机 (默认全部)
+
+# 给外参补 yaw 修正(度)。0 = 不补 ——
+# [实测] 把外参放进 BA 后它只动 0.002~0.151° 且符号不一致,
+# 说明外参本来是对的, 之前观察到的 -2.19° 是 INS 航向/欧拉约定问题,
+# 手动 yaw_fix 是在压症状而不是修因
+yaw_fix_deg: 0                  # 给雷达外参补 yaw 修正, 右乘到 T_w_l (默认 0)
+
+# 雷达外参 T_v_l 一起优化: 0=不动 1=只旋转 2=旋转+平移。
+# [实测] 与 yaml 初值差 1.22°, 而且**外参必须跟着 g2o 走** ——
+# 漏了它下一轮位姿和雷达系约束对不上, 老 session 会被挪 3.56m
+# 平移默认不动: 杆臂在直路上和位置强耦合(病态)
+opt_ext: 1                      # 把**雷达外参 T_v_l 也放进 BA** 一起优化 (0=不动 1=只旋转 2=旋转+平移)
+
+# ---- 导出点云上色 ----
+
+# 另存 *_rgb.pcd (FIELDS x y z rgb, pcl_viewer/CloudCompare 直接认)
+color: true                     # 1 = 导出的点云上色 (默认开)。--no_color 关
+
+# 只用前视相机。留空 = 全部 6 个(上到色 96.7% vs 单相机 52%)
+color_cams: "front_pinhole_wide"  # 上色用哪些相机 (默认全部)
+
+# 相机系最小深度(m)
+color_z_min: 0.5                # 上色时相机坐标系下的最小深度 (m)
+
+# 超此距离不上色(m): 远处一个像素跨好几米, 颜色不可信
+color_max_range: 60             # 超过这个距离不上色的硬阈值 (默认 20)。地面实际由下面的入射角门决定。
+
+# **入射角门**(m): 1 像素的图像误差在该点表面上造成的位移超过它就不上色。
+# 地面上 位移 = d^2/(f*h), h=1.805m fx=774.5 -> 10m:0.07 20m:0.29 30m:0.65m
+# [实测] 路口斑马线糊就是这个 —— 判据是入射角不是距离, 光靠限距离拦不住
+color_smear_max: 0.1            # **入射角门** (默认 0.10): 1 像素的图像误差在该点表面上造成的位移
+loop_min_arc: 0                 # 回环两帧之间的**弧长**下限(m)。默认 0 = 只用'序号差 > intra_win' 判基线。
+export_raw: 1                   # .las 和 _rgb.pcd 用**原始点**写 (默认 1): 只过 min/max_range 和
+export_before: 0                # 是否导出 _before 那一份 (默认 0 = 不导)。
+do_export: 1                    # 0 = **完全不导出点云** (命令行叫 --export)。参数扫描/sigma 校准时用
+
+# 除 .pcd 外再写 .las (LAS 1.2 Point Format 2, 26 字节/点):
+# **一个文件**同时装 xyz + 强度 + 颜色, 坐标是绝对 UTM (局部 + utm_center)。
+# 强度按原始测量值写(本数据 0~255)不缩放; 颜色 8 位左移 8 位填 16 位字段
+las: 1                          # 除 .pcd 外再写一份 .las (LAS 1.2 Point Format 2): **一个文件**同时
+
+# 只用于往 las 里写 CRS 声明 (EPSG = 32600+n, WGS84 北半球)。
+# 0 = 不写 CRS, 坐标照样是绝对 UTM, 只是文件里不声明属于哪个带。
+# **不自动推**: 点相对自己带中央经线的偏移总在 +-3 度内, 所以任何带号都自洽 ——
+# 只凭 (easting, northing) 数学上定不了带号, 猜错会把图放到地球上错误的位置
+# 且不报错。manifest 的 coordinate_systems 里也只有 UTM_WGS84 和 center, 没带号。
+# 知道带号的话填进来 (本项目 utm_center=(275000, 3479282))
+utm_zone: 0                     # UTM 带号, 只用来往 las 里写 CRS 声明 (EPSG = 32600+n, WGS84 北半球)。
+color_ground_h: 0.5             # 车体系高度低于此值的点算'地面点', 才走入射角门 (默认 0.5)
+
+# 遮挡门(m): 深过同像素块最近点这么多就不上色。
+# 没这道门时被前景挡住的远点会拿到前景颜色 —— 墙上糊一片车的颜色,
+# 且随视角变化, 极像重影
+color_occ_tol: 0.5              # 遮挡判定的深度容差 (m): 比 z-buffer 深这么多就算被挡住
+
+# 深度缓冲的像素块边长
+color_occ_px: 4                 # 遮挡 z-buffer 的像素降采样倍数
+
+# 0 = 没上到色的点涂深灰保留 (丢掉会留下空洞, 容易被误读成"没扫到")
+color_drop: 0                   # 1 = 丢弃没上到色的点; 0 = 保留
+
+# ---- 原始点导出 (不做体素滤波, 只裁到一个方框内) ----
+
+# <x,y,size>: 只导这一块方框里的**原始点** —— 强度和点的分布都是原始
+# 测量值, 不被体素均值抹掉。留空=不导。全量不做体素的话数据量吃不下,
+# 所以只取公共区域的一块
+raw_x: 475                      # --raw_export 方框中心 x (m)
+raw_y: -759                     # --raw_export 方框中心 y (m)
+raw_size: 60                    # --raw_export 方框边长 (m); <=0 = 不额外导出这一块
+
+# 按白化残差 rms 自校准 sigma 的轮数。0 = 不校准。
+# [实测] 开了反而更差: 只校准测量项时 rms 全部干净收敛到 1.00,
+# 但跨 session 中位从 0.071 涨到 0.086、最差格 0.168->0.282 ——
+# rms≈1 只证明网络自洽, 不证明几何正确(长链累积漂移没有残差能测到)
+calib_rounds: 0                 # 按白化残差 rms 自校准各类约束 sigma 的轮数 (默认 0 = 不校准)
+
+# 1 = 连 INS/姿态先验也校准。[实测] 会发散: INS sigma 从 0.150 一路
+# 掉到 0.005m, 位姿被钉死, 阶段3 位移只剩 0.002m。
+# 原因是原理性的: 先验每个位姿一条, 残差数=参数数, 冗余度≈0 ——
+# 拿它自己的残差定它自己的方差是自证
+# [实测] 两条独立口径都是**零收益**:
+#   跨 session 一致性: 0.069 (无视觉) vs 0.071 (有视觉), 噪声内
+#   单 session 墙面厚度: 0.0705 vs 0.0704, 三个分位数全在 0.0005 内
+# 而代价是约 5 倍耗时 (ROI 上 1 分钟 -> 5 分 12 秒)。
+# 原因: ORB 特征点落在与 GICP 相同的结构上(墙/杆/标线), 而 GICP 用的是整片表面的
+# 几万个点, 信息量高几个数量级; 它理论上能补的沿路方向已被 INS 先验和多帧约束撑住。
+# 要开就加:  --ba_visual --ba_sigma_px 3.6 --vis_cams ""   (空 = 全部 6 个相机)
+# buildIntra 只在窗口内建对(要求序号相近); 同一地点隔很久再经过一次时, 两帧空间上挨着
+# 但落在不同窗口, 一条约束都不会建。回环这一路专门补它。
+# [实测] 这批数据"空间<12m 且序号差>40"的帧对: jjst2 有 33559 对(同向 30470), 涉及 46% 的帧,
+# 量级和窗口内约束(34991)相当。回环修正量中位 0.10~0.25m —— 长程漂移比跨 session 误差更大。
+# 但当前参数下只建成 26~30 条(占 0.06%), **对最终指标无影响**(12 个方向里 11 个数值完全相同)。
+# 要让它起作用得把 loop_step 降到 5、loop_per_frame 提到 5, 数量到几百条才够和 INS 先验抗衡。
+calib_priors: 0                 # 1=连 INS/姿态先验也校准 (默认 0; 实测会一路收紧到把位姿钉死)
+
+# ---- 增量建图 (多 session 依次并入) ----
+
+# 增量模式: N 个 session 依次并入, 第一个为基准
+incr: true                      # 开启增量模式 (取代 --joint 的两 session 逻辑)
+
+# 位姿+约束存档目录。**有存档 = 已优化, 本次跳过**。
+# 按 pcd 路径匹配并要求 100% 覆盖, 帧集一变就当作待优化而不是静默错位。
+pose_store: "/mnt/nvme0n1p2/ialign_out/store_j2any/"  # 位姿存档目录 (默认 <out>/poses)。**有存档 = 已优化, 本次跳过**
+redo: ""                        # 强制重做这些 session (即使有存档)
+
+# 并入顺序。第一个是基准(只做自身 BA, 外参在它身上估一次然后固定)。
+# 留空 = 按目录序。
+sess_order: ""  # session 顺序 (逗号分隔的目录名); 默认按目录序
+list_done: false                # 只打印'哪些已优化/哪些待优化'然后退出, 不干活
+load_g2o: ""                    # 载入已有位姿图(需同名 _index.csv); 里面的 session 视为已优化
+
+# 0 = 老 session 的位姿参与最终联合优化 [实测: 钉死会退化]
+freeze_prev: 0                  # 1 = 老 session 的位姿在联合优化里钉死 (默认 0 = 一起优化)
+
+# ---- 同 session 回环 (独立于分窗逻辑的一路) ----
+loop: true                      # 1 = 做同 session 回环 (默认开)。--no_loop 关
+
+# 空间距离上限(m)
+loop_dist: 12                   # 空间距离上限 (默认 12)
+
+# 航向差上限(度)。同向占实测帧对的 91%; 逆向经过时同一根杆子被照射的
+# 是相反那一面、遮挡相反, 残差里有配准消除不掉的系统性成分
+
+# 序号差下限。0 = 用 intra_win(低于它的由分窗逻辑覆盖)
+loop_min_gap: 0                 # 序号差下限 (默认 0 = 用 intra_win; 低于它的由分窗逻辑覆盖)
+
+# 沿弧长每隔多少米开一次回环尝试(m)。这是当前数量偏少的主因
+loop_step: 20                   # 沿弧长每隔多少米开一次回环尝试 (默认 20)
+
+# 每次尝试最多留几条
+loop_per_frame: 2               # 每次尝试最多留几条 (默认 2)
+
+# 候选总数上限
+loop_max: 6000                  # 候选总数上限 (默认 6000)
+
+# 回环的 inlier 门。比窗口内的重叠门(0.2)严得多 ——
+# 回环配错一条会把整段轨迹拽歪, 窗口内配错只影响局部。
+# [实测] 采纳 76/80, inlier 中位 0.78~0.88
+# (要关掉整条回环加 --no_loop)
+loop_min_inlier: 0.6            # 回环的 inlier 门 (默认 0.6, 比窗口内的 0.2 重叠门严得多)
+loop_min_inlier_rev: 0.45       # **反向**回环的 inlier 门 (比同向松: 反向照到的是相反那一面)
+loop_submap: 0                  # 回环用 **submap2submap**: 每端取 +-n 帧拼局部 submap 再配 (0=单帧, 默认)
+loop_submap_radius: 25          # 拼 submap 时邻帧到中心帧的距离上限 (默认 25)。
+loop_ba: 1                      # 拼 loop submap 之前先对那 (2n+1) 帧做一次**局部 BA** (默认 1)。
+loop_sigma_t: 0                 # 回环约束的平移 sigma。<=0 = 沿用 --ba_rel_t (默认)。
+loop_sigma_r: 0                 # 回环约束的旋转 sigma。<=0 = 沿用 --ba_rel_r
+loop_anti_w: 0.5                # 反向回环的**权重**相对同向的倍数 (默认 0.5 = 一半)。
+dump_loop: 0                    # **debug**: 落盘前 n 个回环候选 (0=关)。注意 --dump_cross 只管
+dump_pcd: 0                     # dump 时是否**也存 pcd** (默认 0 = 只存 png)。
+
+# ---- 约束去重 / 均匀化 (四维 NMS) ----
+nms_loop: 0                     # 回环用**四维 NMS** 去重 (m); <=0 = 用旧的中点聚类 loop_cluster_*
+nms_cross: 0                    # 跨session 用四维 NMS 去重 (m); <=0 = 不去重 (旧行为, 每帧一条)
+nms_win_deltas: ""              # 同session 窗口内**只建**这些帧号差的约束; 空 = 全建(默认)。
+loop_cluster_dist: 2            # 回环候选按位置聚类的半径 (m)
+loop_cluster_max: 1             # 每个聚类里最多留几条回环候选
+
+# >0: 每次 scan-to-submap 都存 target/前后点云/俯视图, 最多 n 帧。
+# 全量下 900+ 次配准全存要 1GB 以上, 所以默认关。开的话 60 是个合适的值
+dump_cross: 500                 # **debug**: 每次 scan-to-submap 都存下来, 最多 n 帧 (默认 0=关)
+
+# 连通半径(m)。相距 <=m 的帧算相连, 同一 clip 内时序相邻的帧无条件相连。
+# [实测] 正常关键帧间距中位 2.5~3.7m、最大 6.8m —— 给 5 会把正常轨迹切碎
+drop_isolated: 10               # 连通半径 (默认 10, 0=关)。相距 <=m 的帧算相连, **只保留最大的
+
+# 连通域自身空间尺度小于此值就整块丢(m)。
+# [实测] 四个 session 共 20+ 个连通域, 只有 jjst2 的 clip _000000 尺度为 0.0m
+# (54 帧原地停着、离主图 118.9m, 就是导出点云里那块脱离主路线的东西);
+# 其余尺度 175~1810m 全是真实路段, 只是 clip 之间缺数据。
+# 所以**不能**用"只保留最大连通域"(jjst3 那样会丢掉 79% 的真实数据)
+drop_static: 5                  # 连通域自身空间尺度小于这个就整块丢 (默认 5)。
+drop_frames: 0                  # **默认 0 = 一帧都不丢**; 连通域/静止块只分析并打印, 不真丢
+
+# ---- 旧路径: 两 session 一次性联合 —— 已被 --incr 取代, 只留作对照实验 ----
+joint: false                    # 选**旧路径** runJoint (两 session 一次性联合)。与 --incr 平行, 二者只能选一个
+
+# ---- 加载期帧筛选 (--joint / --incr 共用) ----
+load_roi_x: 0                   # --load_roi 方框中心 x (m)
+load_roi_y: 0                   # --load_roi 方框中心 y (m)
+load_roi_size: 0                # --load_roi 方框边长 (m); <=0 = 用全部帧。**改它等于换了帧集**
+
+# ---- 同 session 帧间约束 (--incr 的主力: buildIntra / buildLoop / localBA 都用) ----
+
+# 窗口内建 GICP 约束的最大帧间距离(m)
+intra_pair_dist: 12             # 同 session 内建 GICP 约束的最大帧间距离 (默认 12)
+
+# 分窗帧数, 窗口间 50% 重叠。全部帧的点云同时在内存不可行
+# (2500 帧 x 3 万点 x 192B = 14GB), 所以分窗
+intra_win: 40                   # 分窗处理的窗口帧数, 窗口间 50% 重叠 (默认 40)
+
+# ---- 跨 session 约束: 重叠区域的划分 (--incr 的 buildCross 用) ----
+
+# 沿共位段每隔多少米开一个重叠区域(m)
+region_step: 100                # 沿共位段每隔多少米开一个重叠区域 (默认 150)
+
+# 每个重叠区域的半径(m), 参照帧从这个范围内取
+region_radius: 40               # 每个重叠区域的半径 (默认 40)
+
+# 每个区域拼 submap 最多用多少参照帧。配准**次数**只取决于新 session
+# 的共位帧数(与已有 session 数无关), 但单次配准的 target 会随 session 数
+# 线性膨胀(40m 区域现在 96~109 帧, 20 个 session 后七百多帧/350 万点)。
+# 按到中心距离排序后**按 session 轮转取**: 近处优先, 且每个 session 都有
+# 代表 —— 只按距离取会让最近的那个 session 独占名额
+region_max_frames: 150          # 每个区域拼 submap 最多用多少参照帧 (默认 150, 0=不限)
+
+# ---- 跨 session 约束的权重 (--incr 的最终联合优化用) ----
+
+# 跨 session 约束的平移 sigma(m)。[实测] 六处锚点的配准后 nn 是 0.070~0.103
+cross_sigma_xy: 0.09            # 跨 session 约束的 sigma (默认 0.09)
+
+# 跨 session 约束的旋转 sigma(rad)
+cross_sigma_r: 0.005            # 跨 session 约束的旋转 sigma (默认 0.005)
+

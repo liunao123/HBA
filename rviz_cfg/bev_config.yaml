@@ -1,0 +1,59 @@
+# ============================================================================
+# get_bev_img 专用参数 —— 环视 7 路相机 -> BEV(鸟瞰) 图
+#
+# 用法:
+#   rosrun hba get_bev_img [bev_config.yaml] [work_dir]
+#   (work_dir 命令行参数可覆盖本文件里的 work_dir)
+#
+# work_dir 目录结构:
+#   work_dir/calib/intrinsics/camN_Intrinsic.yaml       内参 K/D + ImageWidth/Height
+#   work_dir/calib/extrinsics/N_camN_2_vehicle_*.yaml   camN -> vehicle 外参
+#   work_dir/images/camN/<frame>_camN.jpg               同一时刻的各路图像
+# 输出:
+#   work_dir/bev/<frame>.jpg
+#   work_dir/bev_per_cam/<frame>_camN.jpg  (save_per_cam: true 时)
+# ============================================================================
+
+work_dir: "/mnt/nvme0n1p2/data/small72/"
+
+bev:
+  # ---- BEV 覆盖范围, 车体系: x 向前 / y 向左, 单位 m ----
+  # 输出图像: 宽 = (y_max-y_min)/resolution, 高 = (x_max-x_min)/resolution
+  # 图像上方为车头(+x), 图像左侧为车身左侧(+y)
+  x_min: -20.0
+  x_max: 20.0
+  y_min: -20.0
+  y_max: 20.0
+  resolution: 0.05        # m / pixel
+  ground_z: 0.0           # 车体系下地平面高度; 若 BEV 地面有拉伸/错位可微调此值
+
+  # ---- 多相机融合 ----
+  max_norm_radius: 1.2    # 归一化像平面半径上限, 抑制 Brown 畸变模型的外推(超出 FOV 会折返)
+  feather_px: 80.0        # 原图边缘羽化宽度(px), 越大相邻相机接缝越柔和
+  cos_power: 3.0          # 入射角余弦权重的幂次, 越大越偏向正对该区域的相机
+
+  # ---- 自车静态遮罩 (work_dir/masks/static/camN/mask.png, 黑=车身 白=有效) ----
+  # 有遮罩时可精确剔除车头/车尾拖影; 文件缺失会打印警告并自动跳过
+  use_static_mask: true
+  mask_root: "masks/static"
+  mask_erode_px: 3        # 在遮罩自身分辨率下收缩有效区, 防止车身边界渗色
+  mask_blur_px: 5         # 遮罩边缘软化, 权重平滑过渡
+
+  # ---- 自车区域 (相机拍不到, 只会是车身与畸变) ----
+  blank_ego: true
+  ego_x_min: -1.5
+  ego_x_max: 3.5
+  ego_y_min: -1.1
+  ego_y_max: 1.1
+
+  # ---- 叠加显示 ----
+  draw_overlay: true      # 距离栅格 / 坐标轴 / 自车框 / 车头箭头 / 帧号
+  grid_step: 5.0          # 栅格线间隔 m
+
+  # ---- 输入/输出 ----
+  cameras: ["cam1", "cam2", "cam3", "cam4", "cam5", "cam6", "cam7"]
+  vehicle_frame: "vehicle"
+  jpeg_quality: 92
+  save_per_cam: false     # 调试用: 额外输出每路相机单独的 BEV, 便于排查外参
+  max_frames: 0           # 只处理前 N 帧, 0 = 全部
+  num_threads: 0          # 0 = 自动 (硬件线程数 - 2)
