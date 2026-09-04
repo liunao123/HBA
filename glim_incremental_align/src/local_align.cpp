@@ -333,6 +333,11 @@ struct Opt {
   // **已被正确建图的位置**叠一份只有 INS 精度、且无人校正的副本 —— 那正是重影的配方。
   int drop_frames = 0;
 
+  // ---- 把优化后的位姿写回原始数据目录 (见 writeBackPoses) ----
+  // **这是唯一会往 --root 里写的功能**, 所以默认关。只新建平级目录, 不动原 pose_dir。
+  int write_back = 0;
+  std::string write_back_dir = "localized";
+
   // ---- 旧路径: 两 session 一次性联合 (已被 --incr 取代, 只留作对照实验) ----
   // !! 下面 joint 之后那些 (load_roi / intra_* / region_* / cross_sigma_*) **不是**
   //    joint 专属的 —— --incr 全都在用。只有 joint 这一个开关是选那条旧路径的。
@@ -504,6 +509,9 @@ static std::vector<ParamField> paramFields(Opt& o) {
   F('D', "drop_isolated", &o.drop_isolated, "连通半径 (默认 10, 0=关)。相距 <=m 的帧算相连, **只保留最大的"),
   F('D', "drop_static", &o.drop_static, "连通域自身空间尺度小于这个就整块丢 (默认 5)。"),
   F('I', "drop_frames", &o.drop_frames, "**默认 0 = 一帧都不丢**; 连通域/静止块只分析并打印, 不真丢"),
+    F('#', "把优化后的位姿写回原始数据目录 (**唯一会写 root 的功能**, 默认关)", nullptr),
+  F('I', "write_back", &o.write_back, "1 = 把优化后的位姿写回 root 下与 pose_dir 平级的新目录 (默认 0)"),
+  F('S', "write_back_dir", &o.write_back_dir, "写回的目录名 (默认 localized), 与 egomotions 平级"),
     F('#', "旧路径: 两 session 一次性联合 —— 已被 --incr 取代, 只留作对照实验", nullptr),
   F('B', "joint", &o.joint, "选**旧路径** runJoint (两 session 一次性联合)。与 --incr 平行, 二者只能选一个"),
     F('#', "加载期帧筛选 (--joint / --incr 共用)", nullptr),
@@ -699,6 +707,33 @@ static bool diffParams(const fs::path& f, Opt& o) {
     for (const auto& l : oth) printf("       %s\n", l.c_str());
   }
   return !reg.empty();
+}
+
+/// @brief 导出某个 session 之前, 先删掉它上一轮留下的同名产物。
+///
+/// 为什么要**先删再写**而不是靠 ofstream 截断: 空间。一次全量导出 6 个 session 要 ~45 GB,
+/// 而旧文件在被同名覆盖之前一直占着盘 —— 峰值就要同时容纳新旧两份。实测盘只剩 7.6 GB 时
+/// 根本导不动。先删掉这个 session 的旧文件, 峰值就只是"其余 session 的旧文件 + 本 session 的新文件"。
+///
+/// 只删**本程序自己按固定命名生成的**那几个文件, 不做 rm -rf: --out 万一指错地方,
+/// 递归删整个目录是不可挽回的。
+static void dropOldExports(const fs::path& out, const std::string& sess) {
+  static const char* suf[] = {"_after.pcd",      "_after.las",      "_after_rgb.pcd",
+                              "_after_raw.pcd",  "_after_raw.las",  "_after_raw_rgb.pcd",
+                              "_before.pcd",     "_before.las",     "_before_rgb.pcd",
+                              "_before_raw.pcd", "_before_raw.las", "_before_raw_rgb.pcd",
+                              "_poses_cmp.csv"};
+  std::size_t n = 0;
+  double gb = 0;
+  for (const char* t : suf) {
+    const fs::path f = out / (sess + t);
+    std::error_code ec;
+    if (!fs::exists(f, ec)) continue;
+    const auto sz = fs::file_size(f, ec);
+    if (!ec) gb += static_cast<double>(sz) / 1073741824.0;
+    if (fs::remove(f, ec)) n++;
+  }
+  if (n) printf("  [%s] 删掉上一轮的 %zu 个产物, 腾出 %.2f GB\n", sess.c_str(), n, gb);
 }
 
 /// @brief 打印命令行帮助。默认值和"为什么是这个值"都写在里面 —— 这个项目里绝大多数
@@ -917,6 +952,24 @@ static void usage() {
                         但**位姿参与最终的联合优化**。这就是增量建图的状态文件 ——
                         每来一个新 session, 只对新 session 做若干次 scan2submap。
   --freeze_prev <0|1>   1 = 老 session 的位姿在联合优化里钉死 (默认 0 = 一起优化)
+  --write_back <0|1>    1 = 把优化后的位姿**写回 --root**, 放在与 --pose_dir 平级的新目录里
+                        (默认 0)。**这是本程序唯一会往 root 里写的功能** —— 其余产物都在
+                        --out / --pose_store 下。只**新建**目录, 绝不改动 egomotions 本身。
+                        每帧一个同名同构的 json: 逐字段拷原文件, 只改与位姿有关的几项 ——
+                          position       优化后的平移 (**减掉统一世界系时加的 utm_shift**,
+                                         否则和该 clip 自己的 utm_center 差几百米还不报错)
+                          orientation    优化后的四元数
+                          euler_angles   同一旋转的 ZYX 分解 (与加载时的 rotFromRPY 互逆)
+                          heading        = euler_z + pi/2  [实测 400 帧恒定, 离散 8.9e-16]
+                          linear_velocity / linear_acceleration / angular_velocity
+                                         世界系向量, 左乘 dR = R_new * R_old^-1
+                                         [实测] 它们 = R_w_v x 对应的 _vrf 量 (残差 0.03%),
+                                         所以 R 变了必须跟着转
+                        时间戳 / speed_mps / steering_angle_deg / 所有 **_vrf** 原样保留 ——
+                        车体系下的量与世界位姿无关, 改它们是错的。
+                        只支持 data_mode=clips (keyframe 的位姿不是每帧一个 json)。
+  --write_back_dir <s>  写回的目录名 (默认 localized)。这批数据里已经有
+                        egomotions_gtsam / egomotions_tyjt 两个同构的平级目录, 沿用这个约定。
 
  同 session 回环 (独立于分窗逻辑的一路, 默认开):
   --no_loop             关掉回环
@@ -1147,6 +1200,8 @@ static bool parse(int argc, char** argv, Opt& o) {
     else if (a == "--dump_pcd") ni(o.dump_pcd);
     else if (a == "--loop_cluster_dist") nd(o.loop_cluster_dist);
     else if (a == "--loop_cluster_max") ni(o.loop_cluster_max);
+    else if (a == "--write_back") ni(o.write_back);
+    else if (a == "--write_back_dir") ns(o.write_back_dir);
     else if (a == "--joint") o.joint = true;
     else if (a == "--intra_pair_dist") nd(o.intra_pair_dist);
     else if (a == "--intra_win") ni(o.intra_win);
@@ -2125,6 +2180,45 @@ static IntraCon buildIntra(const ialign::SessionData& S, const std::vector<int>&
   out.inl_med = inls.empty() ? -1 : inls[inls.size() / 2];
   printf("  [%s] 帧=%d  GICP 候选=%zu 采纳=%zu (修正过大剔=%zu)  inlier中位=%.3f\n", tag, n,
          out.n_cand, out.rel.size(), out.n_big, out.inl_med);
+
+  // ---- 约束图的连通性 ----
+  //
+  // 这和 dropIsolated 报的"位姿空间连通性"**不是一回事**: 那边只看帧与帧的距离(<=10m 算相连),
+  // 而这里建一条约束还要过距离门(intra_pair_dist 12m)、重叠门(ba_min_overlap 0.2)和帧号差白
+  // 名单(nms_win_deltas) —— 空间上挨着不等于建得出约束。
+  //
+  // 为什么要报: 一段帧如果一条约束都没有, 它的位姿就只剩 INS 先验撑着 = 等于没优化,
+  // 而上面那行"候选/采纳"是全 session 的总数, 完全看不出这件事。
+  // 数据把两个时间点采集的片段拼在一起时(帧号连续但空间不连续)最容易出现:
+  // 那两段之间建不出约束 —— 这本身是**对的**(不该硬连), 图会自然断成两块, 各自被 INS 先验
+  // 锚住, 等价于分段 BA; 但如果某一块小到没有任何内部约束, 就得知道。
+  {
+    std::vector<int> par(n);
+    for (int i = 0; i < n; i++) par[i] = i;
+    std::function<int(int)> find = [&](int x) {
+      while (par[x] != x) { par[x] = par[par[x]]; x = par[x]; }
+      return x;
+    };
+    for (const auto& [gi, gj, T] : out.rel) {
+      (void)T;
+      const int a2 = find(gi - gofs), b2 = find(gj - gofs);
+      if (a2 != b2) par[a2] = b2;
+    }
+    std::map<int, int> comp;
+    for (int i = 0; i < n; i++) comp[find(i)]++;
+    if (comp.size() > 1) {
+      std::vector<int> sz;
+      for (const auto& [r, c] : comp) { (void)r; sz.push_back(c); }
+      std::sort(sz.rbegin(), sz.rend());
+      int n_iso = 0;
+      for (const int c : sz) n_iso += (c == 1);
+      printf("  [%s] **约束图分成 %zu 块** (最大 %d 帧, 次大 %d 帧, 单帧孤立 %d 个)\n"
+             "        块之间没有帧间约束 —— 各块只靠 INS 先验定位, 相互位置不受本次 BA 约束。\n"
+             "        常见原因: 数据把不同时间采集的片段拼在一起(帧号连续但空间不连续),\n"
+             "        那种情况下断开是**对的**; 但若某块很小, 它基本等于没被优化。\n",
+             tag, comp.size(), sz[0], sz.size() > 1 ? sz[1] : 0, n_iso);
+    }
+  }
   if (!cams.empty()) {
     printf("  [%s] 视觉: 边=%ld 原始匹配=%ld -> 描述子剔=%ld 极几何剔=%ld 无深度剔=%ld gate剔=%ld"
            " -> **保留=%zu** (窗口重复去掉 %zu)  建边时误差均值=%.2f px\n",
@@ -2649,9 +2743,9 @@ static IntraCon buildLoop(const ialign::SessionData& S, const std::vector<int>& 
         va.reserve(pj.size());
         for (const auto& p : pj) { vb.push_back(T0 * p); va.push_back(T1 * p); }
         if (o.dump_pcd) {
-          savePts(ldir / (std::string(base) + "_A.pcd"), pi);
-          savePts(ldir / (std::string(base) + "_B_before.pcd"), vb);
-          savePts(ldir / (std::string(base) + "_B_after.pcd"), va);
+          // savePts(ldir / (std::string(base) + "_A.pcd"), pi);
+          // savePts(ldir / (std::string(base) + "_B_before.pcd"), vb);
+          // savePts(ldir / (std::string(base) + "_B_after.pcd"), va);
         }
         char la[160], lb[160], lm3[288];
         std::snprintf(la, sizeof(la), "TARGET %s FRAME %d (%zu PTS%s)",
@@ -3560,7 +3654,7 @@ static CrossCon buildCross(const std::vector<RefFrame>& ref, const ialign::Sessi
             va.push_back(Ta * src->points[u]);
           }
           if (o.dump_pcd) {
-            savePts(cdir / (std::string(base) + "_before.pcd"), vb);
+            // savePts(cdir / (std::string(base) + "_before.pcd"), vb);
             savePts(cdir / (std::string(base) + "_after.pcd"), va);
           }
           char la[128], lb[128], lm3[256];
@@ -4226,6 +4320,215 @@ static void dropIsolated(std::vector<ialign::SessionData*> ss, double radius, do
   }
 }
 
+// =============================================================================
+// 把优化后的位姿**写回原始数据目录** —— 新建一个与 egomotions 平级的目录
+//
+// !! 这是本程序**唯一**会往 --root 里写东西的地方。其余所有产物都落在 --out 或
+//    --pose_store 下, root 严格只读。所以这一路默认**关闭** (--write_back 0),
+//    且只**新建**平级目录、绝不改动 egomotions 本身 —— 原始数据永远留着一份。
+//    (数据里已经有 egomotions_gtsam / egomotions_tyjt 两个同构的平级目录, 所以
+//     "平级目录 + 同构 json" 是这批数据既有的约定, 这里沿用。)
+//
+// 写出来的 json 与原文件**同名同构**: 逐字段拷贝原文件, 只改与位姿有关的那几项。
+// 时间戳、speed_mps、steering_angle_deg、以及所有 **_vrf**(车体系) 的量都原样保留 ——
+// 车体系下的测量与世界位姿无关, 改它们是错的。
+//
+// 改哪些、依据是什么 (下面这些关系都是**在这批数据上实测**出来的, 不是照文档猜的):
+//
+//   position          <- 优化后的 T_w_v 平移。**必须减掉 utm_shift**: 加载时为了让各
+//                        session 共享一个世界系, 非基准 session 的位姿被整体平移过
+//                        (见 main 里的"统一世界系"), 而每个 clip 的 position 是相对
+//                        它自己 calibration 里的 utm_center 的。不减就差几百米且不报错。
+//   orientation       <- 优化后的 T_w_v 旋转, 四元数 (qw,qx,qy,qz)
+//   euler_angles      <- 同一个旋转按 **ZYX** 分解 (Rz(yaw)*Ry(pitch)*Rx(roll))。
+//                        [实测] 原文件里 orientation 与 euler_angles 就是这个关系,
+//                        两者转成矩阵后最大元素差 2.6e-5 (= 文件里存的小数位数)。
+//   heading           <- euler_angles.z + pi/2。
+//                        [实测] 400 帧里 heading - euler_z 恒为 +1.5707963267948966,
+//                        离散只有 8.9e-16 (纯浮点误差), 所以这是个确定的派生量。
+//   linear_velocity      \
+//   linear_acceleration   >  <- 都是**世界系**向量, 一律左乘 dR = R_new * R_old^-1。
+//   angular_velocity     /
+//                        [实测] 世界系量 = R_w_v x 对应的 _vrf 量:
+//                          ||R*acc_vrf - acc||  中位 0.0032 (占 9.8 的 0.03%)
+//                          ||R*gyr_vrf - gyr||  中位 0.00007
+//                        所以它们是由车体系量经 R_w_v 转出去的 —— R 变了就得跟着转。
+//                        用 dR 而不是"R_new * _vrf" 是为了对 linear_velocity 也成立
+//                        (它没有 _vrf 对应项); 对 acc/gyr 两种写法等价。
+//
+// @param Tv    优化后的车体位姿 (全局下标)
+// @param Tins  **优化前**的车体位姿 —— 用来算 dR。注意 attitude_from=euler 时它的旋转
+//              来自 euler_angles 而不是 orientation, 两者差 2.6e-5, 可忽略。
+// @param ofs   各 session 在全局下标里的起点
+static void writeBackPoses(const Opt& o, const std::vector<ialign::SessionData>& S,
+                           const std::vector<Eigen::Isometry3d>& Tv,
+                           const std::vector<Eigen::Isometry3d>& Tins,
+                           const std::vector<int>& ofs, const Eigen::Isometry3d& ext,
+                           const std::vector<Eigen::Isometry3d>& ext0) {
+  printf("\n=== 把优化后的位姿写回原始数据目录 (--write_back 1) ===\n");
+  if (o.data_mode != "clips") {
+    printf("  !! 只支持 data_mode=clips (现在是 %s) —— keyframe 模式的位姿不是每帧一个\n"
+           "     json, 目录结构也不同, 没有对应的写回规则。跳过。\n", o.data_mode.c_str());
+    return;
+  }
+  printf("  源目录 %s  ->  新目录 %s (与它平级, **不动原 %s**)\n",
+         o.pose_dir.c_str(), o.write_back_dir.c_str(), o.pose_dir.c_str());
+
+  std::size_t n_ok = 0, n_miss = 0, n_fail = 0;
+  std::vector<double> dt, dr;
+  for (int k = 0; k < static_cast<int>(S.size()); k++) {
+    const Eigen::Vector3d shift(S[k].utm_shift.x(), S[k].utm_shift.y(), 0.0);
+    std::size_t sk_ok = 0;
+    std::set<std::string> dirs_made;
+    for (std::size_t i = 0; i < S[k].frames.size(); i++) {
+      const int g = ofs[k] + static_cast<int>(i);
+      // pcd 路径形如 <clip>/sensors/<lidar_dir>/<stem>.pcd, 所以往上三级就是 clip 目录
+      // (与 dropIsolated 里的 clip_of 同一套推导)
+      const fs::path pcd(S[k].frames[i].pcd_path);
+      const fs::path clip = pcd.parent_path().parent_path().parent_path();
+      const std::string stem = pcd.stem().string();
+      const fs::path src = clip / o.pose_dir / (stem + ".json");
+      const fs::path dst_dir = clip / o.write_back_dir;
+      const fs::path dst = dst_dir / (stem + ".json");
+      if (!fs::exists(src)) { n_miss++; continue; }
+      std::error_code ec;
+      if (!dirs_made.count(dst_dir.string())) {
+        fs::create_directories(dst_dir, ec);
+        dirs_made.insert(dst_dir.string());
+      }
+      try {
+        // **ordered_json 而不是 json**: 默认的 nlohmann::json 底层是 std::map, 会把键按
+        // 字母序重排 —— JSON 语义上无所谓, 但和原文件做文本 diff 就全是噪音, 顺序敏感的
+        // 读取工具也可能受影响。ordered_json 保持文件里的原始顺序。
+        // (顺带: 这批数据里有的 clip 还多一个 navigation 键 —— "逐字段拷贝原文件"的做法
+        //  自动把它带过去, 不用逐个列举有哪些键。)
+        nlohmann::ordered_json j;
+        { std::ifstream is(src.string()); is >> j; }
+        const Eigen::Isometry3d& Tn = Tv[g];
+        const Eigen::Matrix3d Rn = Tn.linear();
+        const Eigen::Matrix3d Ro = Tins[g].linear();
+        // ---- position (减掉统一世界系时加的偏移) ----
+        const Eigen::Vector3d t = Tn.translation() - shift;
+        j["position"]["x"] = t.x();
+        j["position"]["y"] = t.y();
+        j["position"]["z"] = t.z();
+        // ---- orientation ----
+        const Eigen::Quaterniond q(Rn);
+        j["orientation"]["qw"] = q.w();
+        j["orientation"]["qx"] = q.x();
+        j["orientation"]["qy"] = q.y();
+        j["orientation"]["qz"] = q.z();
+        // ---- euler_angles: ZYX 分解, 与 session_loader 的 rotFromRPY 互逆 ----
+        const double roll = std::atan2(Rn(2, 1), Rn(2, 2));
+        const double pitch = -std::asin(std::max(-1.0, std::min(1.0, Rn(2, 0))));
+        const double yaw = std::atan2(Rn(1, 0), Rn(0, 0));
+        if (j.contains("euler_angles")) {
+          j["euler_angles"]["x"] = roll;
+          j["euler_angles"]["y"] = pitch;
+          j["euler_angles"]["z"] = yaw;
+        }
+        // ---- heading = yaw + pi/2 (实测恒定关系) ----
+        // 老的驱动是这样
+        // 7月份 更新了定位输出 quatity_to_heading, 保证 heading = yaw
+        if (j.contains("heading")) j["heading"] = yaw ; // + M_PI / 2.0;
+        // ---- 世界系的速度/加速度/角速度: 左乘 dR ----
+        const Eigen::Matrix3d dR = Rn * Ro.transpose();
+        for (const char* key : {"linear_velocity", "linear_acceleration", "angular_velocity"}) {
+          if (!j.contains(key)) continue;
+          auto& v = j[key];
+          if (!v.contains("x") || !v.contains("y") || !v.contains("z")) continue;
+          const Eigen::Vector3d a(v["x"].get<double>(), v["y"].get<double>(),
+                                  v["z"].get<double>());
+          const Eigen::Vector3d b = dR * a;
+          v["x"] = b.x();
+          v["y"] = b.y();
+          v["z"] = b.z();
+        }
+        { std::ofstream os(dst.string()); os << j.dump(1); }
+        // 报告位姿被改了多少 —— 全是 0 就说明写回的是没优化过的东西
+        dt.push_back((Tn.translation() - Tins[g].translation()).norm());
+        dr.push_back(std::abs(Eigen::AngleAxisd(dR).angle()) * 180.0 / M_PI);
+        n_ok++;
+        sk_ok++;
+      } catch (const std::exception& e) {
+        if (n_fail < 5) printf("    !! 写失败 %s : %s\n", dst.string().c_str(), e.what());
+        n_fail++;
+      }
+    }
+    printf("  [%d] %-34s %zu/%zu 帧  (utm_shift = %.2f, %.2f m%s)\n", k, S[k].name.c_str(),
+           sk_ok, S[k].frames.size(), S[k].utm_shift.x(), S[k].utm_shift.y(),
+           S[k].utm_shift.norm() > 1e-6 ? ", 已从 position 里减掉" : "");
+  }
+  const auto med = [](std::vector<double>& v) {
+    if (v.empty()) return -1.0;
+    std::sort(v.begin(), v.end());
+    return v[v.size() / 2];
+  };
+  const auto mx = [](const std::vector<double>& v) {
+    return v.empty() ? -1.0 : *std::max_element(v.begin(), v.end());
+  };
+  printf("  写出 %zu 帧%s%s\n", n_ok,
+         n_miss ? ("  (源 json 不存在, 跳过 " + std::to_string(n_miss) + " 帧)").c_str() : "",
+         n_fail ? ("  **失败 " + std::to_string(n_fail) + " 帧**").c_str() : "");
+  printf("  相对原始 INS 的改动: 平移 中位 %.3f max %.3f m | 旋转 中位 %.4f max %.4f 度\n",
+         med(dt), mx(dt), med(dr), mx(dr));
+  if (mx(dt) < 1e-9)
+    printf("    !! 一帧都没动过 —— 写回的就是原始 INS。检查是不是所有 session 都跳过了优化。\n");
+
+  // ---- 完整性: 写出的帧数 vs 源目录里的帧数 ----
+  // 只有**参与本次优化的帧**才有新位姿, 所以 --load_roi / --drop_frames 1 之后写出的
+  // 目录会比源目录少帧。缺帧的目录不能直接当 egomotions 用(下游按文件名配点云会少一截),
+  // 所以这里逐 clip 数一遍, 不全的当场报出来。
+  {
+    std::set<fs::path> clips;
+    for (const auto& sd : S) {
+      for (const auto& f : sd.frames)
+        clips.insert(fs::path(f.pcd_path).parent_path().parent_path().parent_path());
+    }
+    std::size_t n_part = 0, src_tot = 0, dst_tot = 0;
+    for (const auto& cl : clips) {
+      std::error_code ec;
+      std::size_t a2 = 0, b2 = 0;
+      for (const auto& e : fs::directory_iterator(cl / o.pose_dir, ec))
+        a2 += (e.path().extension() == ".json");
+      for (const auto& e : fs::directory_iterator(cl / o.write_back_dir, ec))
+        b2 += (e.path().extension() == ".json");
+      src_tot += a2;
+      dst_tot += b2;
+      if (a2 != b2) {
+        if (n_part < 5)
+          printf("    !! %s: 源 %zu 帧 -> 写出 %zu 帧 (少 %zu)\n",
+                 cl.filename().string().c_str(), a2, b2, a2 - b2);
+        n_part++;
+      }
+    }
+    printf("  覆盖率: %zu 个 clip, 源 %zu 帧 -> 写出 %zu 帧", clips.size(), src_tot, dst_tot);
+    if (n_part)
+      printf("  **%zu 个 clip 不完整**\n"
+             "     只有参与本次优化的帧才有新位姿 —— --load_roi / --drop_frames 1 会让帧集变小。\n"
+             "     缺帧的目录不能直接当 egomotions 用(下游按文件名找点云会少一截)。\n", n_part);
+    else
+      printf("  (每个 clip 都完整)\n");
+  }
+
+  // ---- 外参: opt_ext > 0 时这份 orientation **不是**单独可用的 ----
+  // T_w_l = T_w_v * T_v_l。外参被优化后转了 δ, 求解器就会让 T_w_v 反向转 δ 去保持
+  // T_w_l —— 于是写回的 orientation 里含着这份补偿, 拿它配**原始**外参重建点云会错 δ。
+  // 这不是 bug, 是 opt_ext 的定义决定的; 但必须说出来, 否则这份数据会被误用。
+  if (o.opt_ext > 0 && !ext0.empty()) {
+    const Eigen::AngleAxisd de(ext0[0].linear().transpose() * ext.linear());
+    const double dd = std::abs(de.angle()) * 180.0 / M_PI;
+    const double dtt = (ext.translation() - ext0[0].translation()).norm();
+    printf("  !! --opt_ext %d: 雷达外参也被优化了 (相对 yaml 初值 转了 %.4f 度, 挪了 %.4f m)\n"
+           "     T_w_l = T_w_v * T_v_l, 所以外参转了 δ 时求解器会让 T_w_v 反向转 δ ——\n"
+           "     **写回的 orientation 里含着这份补偿**, 拿它配 calibration 里的原始外参\n"
+           "     重建点云会错 %.4f 度 (10m 处约 %.3f m)。要用这份位姿就得配优化后的外参,\n"
+           "     它在 %s/<session>.csv 的头部 (ext_qwxyz_txyz=)。\n",
+           o.opt_ext, dd, dtt, dd, 10.0 * dd * M_PI / 180.0,
+           o.pose_store.empty() ? "<out>/poses" : o.pose_store.c_str());
+  }
+}
+
 /// @brief 增量建图主流程: 按顺序把 N 个 session 并进来。
 ///
 /// 每个待优化的 session 走三步:
@@ -4250,10 +4553,16 @@ static int runIncr(const Opt& o, std::vector<ialign::SessionData>& S,
   const fs::path store = o.pose_store.empty() ? (fs::path(o.out) / "poses") : fs::path(o.pose_store);
   {
     // 判断 store 是否落在 out 之内 (用规范化后的路径前缀比, 免得被 ./ 和 .. 骗过)
+    //
+    // **必须比到分隔符边界**: 光看字符串前缀会把平级目录误判成包含关系 ——
+    // 实测 out=".../result" 与 store=".../result_pose" 就被报成"存档在 out 里面",
+    // 而它们其实是兄弟目录。误报本身无害(只是打印), 但会让人去改一个本来正确的路径。
     std::error_code ec;
     const auto so = fs::weakly_canonical(fs::absolute(fs::path(o.out)), ec).string();
     const auto ss = fs::weakly_canonical(fs::absolute(store), ec).string();
-    if (ss.compare(0, so.size(), so) == 0)
+    const bool inside = ss.size() > so.size() && ss.compare(0, so.size(), so) == 0 &&
+                        (ss[so.size()] == '/' || so.back() == '/');
+    if (inside)
       printf("\n  !! 位姿存档在 --out 里面 (%s)\n"
              "     --out 会随实验被清掉, 存档跟着没了 = 每次都从零重跑, 增量白做。\n"
              "     建议: --pose_store <一个独立的持久目录>, 与 --out 分开。\n",
@@ -4359,11 +4668,42 @@ static int runIncr(const Opt& o, std::vector<ialign::SessionData>& S,
   }
 
   const std::vector<char> done_before = done;   // 本次开始前就已优化的 (用于报告)
+  {
+    // 基准 = 第一个被处理且当时没有任何已优化 session 的那个。有存档时不存在"基准"问题:
+    // 新 session 无论排第几都会以已优化的那批为参照 (见下面 ref 的构建)。
+    //
+    // **把待优化的单独列一遍**: 上面那份清单是逐行的, session 多了以后得一行行扫才知道
+    // 这次到底要算什么。尤其"全都已优化"这种情况 —— 那时本次不做任何配准, 只跑最终联合
+    // 优化和导出, 而看到一屏"本次跳过"很容易以为程序什么都没干。
+    std::vector<int> todo, ok;
+    for (int k = 0; k < ns; k++) (done[k] ? ok : todo).push_back(k);
+    printf("\n  --- 本次要做什么 ---\n");
+    if (todo.empty()) {
+      printf("  **没有待优化的 session** (%zu 个全部已有存档)\n"
+             "     所以本次**不做任何配准**: 直接复用存档里的位姿和约束, 只跑最终联合优化 + 导出。\n"
+             "     要重算某个 session 用 --redo <名字>; 要从零重做就换一个空的 --pose_store。\n",
+             ok.size());
+    } else {
+      printf("  **待优化 %zu 个** (要跑配准, 这是本次的主要耗时):\n", todo.size());
+      for (const int k : todo)
+        printf("       [%d] %-34s 帧=%zu\n", k, S[k].name.c_str(), S[k].frames.size());
+      if (!ok.empty()) {
+        printf("  已优化 %zu 个 (跳过配准, 但位姿参与最终联合优化):\n", ok.size());
+        for (const int k : ok)
+          printf("       [%d] %-34s 帧=%zu\n", k, S[k].name.c_str(), S[k].frames.size());
+      }
+    }
+    if (ok.empty() && ns > 1) {
+      printf("  注意: 一个已优化的 session 都没有 —— [0] %s 会作为基准 (外参在它身上估一次),\n"
+             "        其余 session 依次并到它上面\n", S[0].name.c_str());
+    } else if (!ok.empty() && !todo.empty()) {
+      printf("  已优化的那 %zu 个共同作为参照系, 待优化的会并到这个整体上\n", ok.size());
+    }
+  }
   if (o.list_done) {
     printf("\n  --list_done: 只列清单, 不干活\n");
     return 0;
   }
-  if (!done[0] && ns > 1) printf("\n  注意: 基准 session [0] 尚未优化, 本次会先优化它\n");
 
   // ---- 位姿状态 ----
   std::vector<Eigen::Isometry3d> Tins(ntot), Tcur(ntot);   // 车体位姿: INS 初值 / 当前
@@ -4565,10 +4905,20 @@ static int runIncr(const Opt& o, std::vector<ialign::SessionData>& S,
     std::vector<int> idx(nk);
     for (int i = 0; i < nk; i++) idx[i] = i;
 
-    // 参照系: 前面所有**已优化**的 session 的帧
+    // 参照系: **所有**已优化的 session 的帧 —— 注意不限于下标在 k 之前的。
+    //
+    // 曾经写的是 `j < k`, 结果踩了这个坑: 新数据的目录名字典序靠前(20250626 vs 20260713)、
+    // sess_order 又没给, 于是新 session 排到 k=0, 它前面没有任何 session -> ref 空 ->
+    // 被判成"基准 session, 没有可并入的参照", 只建了自己的 4873 条帧间约束,
+    // 跨 session 边 0 条。也就是新数据成了一座孤岛, 只靠 INS 先验漂在地图上
+    // (它的联合优化位移是 0.000, 因为没有任何跨 session 约束在拉它)。
+    //
+    // done[j] 的 session 都已经在同一个坐标系里了(存档读回来的是优化后位姿), 它们排在
+    // k 之前还是之后没有区别。所以判据只该是"已优化", 不该掺进下标顺序。
+    // done[k] 在写存档成功时置位, 所以本次刚优化完的 session 也会成为后续的参照。
     std::vector<RefFrame> ref;
-    for (int j = 0; j < k; j++) {
-      if (!done[j]) continue;
+    for (int j = 0; j < ns; j++) {
+      if (j == k || !done[j]) continue;
       for (std::size_t i = 0; i < S[j].frames.size(); i++) {
         ref.push_back({ofs[j] + static_cast<int>(i), j, Tcur[ofs[j] + i] * ext,
                        S[j].frames[i].pcd_path});
@@ -4640,7 +4990,9 @@ static int runIncr(const Opt& o, std::vector<ialign::SessionData>& S,
 
     // ---- 阶段2/3: 并到前面已优化的 session 上 ----
     if (ref.empty()) {
-      printf("\n  这是基准 session, 没有可并入的参照, 到此为止\n");
+      // 走到这里说明**一个已优化的 session 都没有** —— 真正的第一次建图。
+      // 不再是"下标 0 就当基准": 增量时只要存档里有 session, 新数据一定会去并。
+      printf("\n  这是基准 session (当前没有任何已优化的 session 可作参照), 到此为止\n");
     } else {
       printf("\n=== [%s] 阶段2: 与前面 session 的重叠区域建约束 ===\n", S[k].name.c_str());
       std::vector<Eigen::Isometry3d> Tk_l(nk);
@@ -4871,6 +5223,11 @@ static int runIncr(const Opt& o, std::vector<ialign::SessionData>& S,
     }
   }
 
+  // ---- 写回原始数据目录 ----
+  // **放在导出之前**: 导出一次要几十分钟/几十 GB, 而写回是秒级的, 先把它落地,
+  // 万一导出阶段被 OOM/磁盘满打断, 写回的结果已经在盘上了。
+  if (o.write_back) writeBackPoses(o, S, Tcur, Tins, ofs, ext, Tvl0);
+
   // ---- 导出 ----
   if (!o.do_export) {
         printf("\n=== 导出点云: **跳过** (--export 0) ===\n");
@@ -4893,6 +5250,8 @@ static int runIncr(const Opt& o, std::vector<ialign::SessionData>& S,
     printf("\n");
   }
   for (int k = 0; k < ns; k++) {
+    // 重新导出 = 覆盖上一轮。先删本 session 的旧产物, 免得新旧两份同时占盘 (见 dropOldExports)
+    dropOldExports(fs::path(o.out), S[k].name);
     for (int pass = 0; pass < 2; pass++) {
       const bool after = pass == 1;
       if (!after && !o.export_before) continue;   // --export_before 0: 只导 _after
@@ -4991,7 +5350,7 @@ static int runIncr(const Opt& o, std::vector<ialign::SessionData>& S,
         for (int u = 0; u < b1 - b0; u++) {
           // 原始点 -> 直接写盘
           if (las_ok) lasS.add(fpr[u], &fir[u], with_rgb ? &fcr[u] : nullptr,
-                               with_rgb ? &forr[u] : nullptr);
+                               with_rgb ? &forr[u] : nullptr, o.color_drop != 0);
           if (rgb_ok) rgbS.add(fpr[u], nullptr, &fcr[u], &forr[u], o.color_drop != 0);
           fpr[u] = {}; fcr[u] = {}; forr[u] = {}; fir[u] = {};
           // 体素 -> 并进格子
@@ -5086,16 +5445,29 @@ static int runIncr(const Opt& o, std::vector<ialign::SessionData>& S,
         savePts(fs::path(o.out) / (nm + "_raw.pcd"), pts, ints);
         printf("  %-46s %zu 点 (%zu 帧)\n", (nm + "_raw.pcd").c_str(), pts.size(), use.size());
         if (o.las) {
-          // 未上到色的点给黑, 不给灰占位: las 里颜色和强度并存, 用强度就能看清结构,
-          // 灰占位反而在渲染时和真实的浅色路面混在一起
-          std::vector<Rgb> ca(pts.size(), Rgb(0, 0, 0));
-          for (std::size_t q = 0; q < pts.size() && with_rgb; q++)
-            if (okc_all[q]) ca[q] = cols[q];
-          if (ialign::saveLas((fs::path(o.out) / (nm + "_raw.las")).string(), pts, ints, ca,
+          // --color_drop 1: **未上色的点直接不写**。不删的话它们以黑色进 las, 而 las 里
+          // 颜色和强度并存 —— 按颜色渲染时那片黑会盖住真实结构, 看着像洞。单相机只覆盖
+          // 前视一小片, 所以"未上色"是多数不是少数。
+          // color_drop 0 时保留并给黑 (不给灰占位: 灰会和浅色路面混)。
+          std::vector<Eigen::Vector4d> lp;
+          std::vector<double> li;
+          std::vector<Rgb> ca;
+          const bool ldrop = with_rgb && o.color_drop != 0;
+          lp.reserve(pts.size());
+          for (std::size_t q = 0; q < pts.size(); q++) {
+            const bool colored = with_rgb && q < okc_all.size() && okc_all[q];
+            if (ldrop && !colored) continue;
+            lp.push_back(pts[q]);
+            if (q < ints.size()) li.push_back(ints[q]);
+            ca.push_back(colored ? cols[q] : Rgb(0, 0, 0));
+          }
+          if (!lp.empty() &&
+              ialign::saveLas((fs::path(o.out) / (nm + "_raw.las")).string(), lp, li, ca,
                               base_utm, o.utm_zone))
-            printf("  %-46s %zu 点 (绝对 UTM%s)\n", (nm + "_raw.las").c_str(), pts.size(),
+            printf("  %-46s %zu 点 (绝对 UTM%s)%s\n", (nm + "_raw.las").c_str(), lp.size(),
                    o.utm_zone > 0 ? (" EPSG:" + std::to_string(32600 + o.utm_zone)).c_str()
-                                  : ", 未声明 CRS");
+                                  : ", 未声明 CRS",
+                   ldrop ? "  [未上色的已删除]" : "");
         }
         if (with_rgb) {
           std::vector<Eigen::Vector4d> cp;
@@ -5633,6 +6005,7 @@ int main(int argc, char** argv) {
           f.T_w_v.translation() += d3;
           f.T_w_l.translation() += d3;
         }
+        S[k].utm_shift = d2;          // 写回原始 egomotions 时要减掉 (见 writeBackPoses)
         S[k].utm_center = base_utm;
         printf("  %s 的 utm_center 差 (%.2f, %.2f)m, 已平移到基准系\n", S[k].name.c_str(), d2.x(),
                d2.y());

@@ -325,7 +325,7 @@ struct ReprojResidualExt {
 
 struct SubmapCeresOpts {
   double sigma_ins_xy = 0.30;   // INS 位置锚的 sigma (m)
-  double ins_z_scale = 0.75;    // z 的权重系数 (源自 ms_mapping: INS 的 z 更差)
+  double ins_z_scale = 0.9;    // z 的权重系数 (源自 ms_mapping: INS 的 z 更差)
   double sigma_rel_t = 0.10;    // 帧间相对位姿的平移 sigma (m)
   double sigma_rel_r = 0.01;    // 帧间相对位姿的旋转 sigma (rad)
   double attitude_w = 50.0;     // 姿态先验权重

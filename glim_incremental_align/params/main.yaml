@@ -36,8 +36,8 @@
 #
 # 每行的 # 是一行摘要, 和 --help 是同一句话; 参数上方的多行块是实测记录。
 # =============================================================================
-root: "/media/tyjt/Elements/WG_wuling/incremental_mapping"  # 数据根目录
-out: "/mnt/nvme0n1p2/ialign_out/j2any/"  # 输出目录
+root: "/media/tyjt/Elements/WG_wuling/test_grid_data/"  # 数据根目录
+out: "/media/tyjt/Elements/WG_wuling/test_grid_data/result/"  # 输出目录
 
 # clips | keyframe
 data_mode: "clips"              # clips | keyframe (默认 clips)
@@ -51,6 +51,26 @@ attitude_from: "quat"           # quat | euler (默认 euler)
 
 # sensors/ 下用哪个雷达。fuse_lidar 与 front_lidar 的外参逐比特相同
 lidar_dir: "fuse_lidar"         # clips: sensors/ 下哪个雷达 (默认 fuse_lidar)
+
+# ---- 把优化后的位姿写回原始数据目录 (**唯一会写 root 的功能**, 默认关) ----
+write_back: 1                   # 1 = 把优化后的位姿写回 root 下与 pose_dir 平级的新目录 (默认 0)
+write_back_dir: "localized"  # 写回的目录名 (默认 opt_egomotions), 与 egomotions 平级
+
+# ---- 增量建图 (多 session 依次并入) ----
+# 增量模式: N 个 session 依次并入, 第一个为基准
+incr: true                      # 开启增量模式 (取代 --joint 的两 session 逻辑)
+# 位姿+约束存档目录。**有存档 = 已优化, 本次跳过**。
+# 按 pcd 路径匹配并要求 100% 覆盖, 帧集一变就当作待优化而不是静默错位。
+pose_store: "/media/tyjt/Elements/WG_wuling/test_grid_data/result_pose/"  # 位姿存档目录 (默认 <out>/poses)。**有存档 = 已优化, 本次跳过**
+redo: ""                        # 强制重做这些 session (即使有存档)
+# 并入顺序。第一个是基准(只做自身 BA, 外参在它身上估一次然后固定)。
+# 留空 = 按目录序。
+sess_order: ""  # session 顺序 (逗号分隔的目录名); 默认按目录序
+list_done: false                # 只打印'哪些已优化/哪些待优化'然后退出, 不干活
+load_g2o: ""                    # 载入已有位姿图(需同名 _index.csv); 里面的 session 视为已优化
+# 0 = 老 session 的位姿参与最终联合优化 [实测: 钉死会退化]
+freeze_prev: 0                  # 1 = 老 session 的位姿在联合优化里钉死 (默认 0 = 一起优化)
+
 
 # 只在 data_mode=keyframe 时生效 (sparse | odoms)
 pose_src: "sparse"              # keyframe: sparse | odoms (默认 sparse)
@@ -86,20 +106,20 @@ cross_src_win: 5                # 源端也取当前帧 +-n 帧拼 submap (先�
 frame_voxel: 0.05               # 单帧体素 (默认 0.25)
 
 # 拼 submap / 导出成图的体素(m) = target 点间距。与 frame_voxel 同量级
-submap_voxel: 0.05              # submap 体素 = target 点间距 (默认 0.15)
+submap_voxel: 0.1              # submap 体素 = target 点间距 (默认 0.15)
 
 # 距离下限(m), 去车身
 min_range: 5                    # 单帧点的最小距离 (m), <=0 = 关闭
 
 # 距离上限(m)。[实测] 厚度与离轨迹距离几乎无关(0-10m 0.099 / 30-50m 0.109),
 # 所以收紧量程对厚度**没有**帮助, 只是少一些远处稀疏噪点
-max_range: 40                   # 单帧点的最大距离 (m), <=0 = 关闭
+max_range: 80                   # 单帧点的最大距离 (m), <=0 = 关闭
 
 # target 体素图分辨率(m)。**必须 >= 3 x max(frame_voxel, submap_voxel)**:
 # 体素图比点间距还稀时, 源点必须落进与 target 点同一个格才算 inlier ->
 # 无论对齐多好 inlier 都塌到 0.2 量级, 帧全被剔, 而日志看不出异常。
 # 程序启动时有自检会打印警告。
-tgt_voxel: 0.9                  # target 体素图分辨率 (默认 0.9)
+tgt_voxel: 0.2                  # target 体素图分辨率 (默认 0.9)
 
 # scan-to-submap 的 VGICP 迭代次数
 iters: 20                       # VGICP 迭代 (默认 20)
@@ -143,7 +163,7 @@ ba: true                        # 对 A 的邻域帧做**submap 内部 BA** 再�
 ba_min_overlap: 0.2             # 帧间建约束的最小重叠率 (默认 0.2)
 
 # 帧间 VGICP 的体素图分辨率(m)
-ba_pair_voxel: 0.9              # BA 内帧间 GICP 的体素 (m)
+ba_pair_voxel: 0.3              # BA 内帧间 GICP 的体素 (m)
 
 # 帧间/回环 VGICP 的 LM 迭代次数
 ba_pair_iters: 20               # 帧间/回环 VGICP 的 LM 迭代次数 (默认 20)
@@ -178,7 +198,7 @@ ba_chi2: 0                      # >0 时按卡方阈值剔除异常帧间约束�
 
 # Ceres 迭代次数
 ba_iters: 50                    # Ceres 迭代上限
-ba_visual: false                # BA 里再加视觉重投影约束 (隐含 --ba)
+ba_visual: true                # BA 里再加视觉重投影约束 (隐含 --ba)
 ba_sigma_px: 3.6                # 视觉重投影的 sigma, 单位像素 (默认 3.6, 实测校准值)
 vis_cams: ""                    # 视觉用哪些相机 (默认全部)
 
@@ -240,7 +260,7 @@ color_occ_tol: 0.5              # 遮挡判定的深度容差 (m): 比 z-buffer 
 color_occ_px: 4                 # 遮挡 z-buffer 的像素降采样倍数
 
 # 0 = 没上到色的点涂深灰保留 (丢掉会留下空洞, 容易被误读成"没扫到")
-color_drop: 0                   # 1 = 丢弃没上到色的点; 0 = 保留
+color_drop: 1                   # 1 = **丢弃没上到色的点** (_rgb.pcd 和 .las 都删); 0 = 保留并给黑
 
 # ---- 原始点导出 (不做体素滤波, 只裁到一个方框内) ----
 
@@ -276,24 +296,6 @@ calib_rounds: 0                 # 按白化残差 rms 自校准各类约束 sigm
 # 要让它起作用得把 loop_step 降到 5、loop_per_frame 提到 5, 数量到几百条才够和 INS 先验抗衡。
 calib_priors: 0                 # 1=连 INS/姿态先验也校准 (默认 0; 实测会一路收紧到把位姿钉死)
 
-# ---- 增量建图 (多 session 依次并入) ----
-
-# 增量模式: N 个 session 依次并入, 第一个为基准
-incr: true                      # 开启增量模式 (取代 --joint 的两 session 逻辑)
-
-# 位姿+约束存档目录。**有存档 = 已优化, 本次跳过**。
-# 按 pcd 路径匹配并要求 100% 覆盖, 帧集一变就当作待优化而不是静默错位。
-pose_store: "/mnt/nvme0n1p2/ialign_out/store_j2any/"  # 位姿存档目录 (默认 <out>/poses)。**有存档 = 已优化, 本次跳过**
-redo: ""                        # 强制重做这些 session (即使有存档)
-
-# 并入顺序。第一个是基准(只做自身 BA, 外参在它身上估一次然后固定)。
-# 留空 = 按目录序。
-sess_order: ""  # session 顺序 (逗号分隔的目录名); 默认按目录序
-list_done: false                # 只打印'哪些已优化/哪些待优化'然后退出, 不干活
-load_g2o: ""                    # 载入已有位姿图(需同名 _index.csv); 里面的 session 视为已优化
-
-# 0 = 老 session 的位姿参与最终联合优化 [实测: 钉死会退化]
-freeze_prev: 0                  # 1 = 老 session 的位姿在联合优化里钉死 (默认 0 = 一起优化)
 
 # ---- 同 session 回环 (独立于分窗逻辑的一路) ----
 loop: true                      # 1 = 做同 session 回环 (默认开)。--no_loop 关
@@ -308,13 +310,13 @@ loop_dist: 12                   # 空间距离上限 (默认 12)
 loop_min_gap: 0                 # 序号差下限 (默认 0 = 用 intra_win; 低于它的由分窗逻辑覆盖)
 
 # 沿弧长每隔多少米开一次回环尝试(m)。这是当前数量偏少的主因
-loop_step: 20                   # 沿弧长每隔多少米开一次回环尝试 (默认 20)
+loop_step: 10                   # 沿弧长每隔多少米开一次回环尝试 (默认 20)
 
 # 每次尝试最多留几条
-loop_per_frame: 2               # 每次尝试最多留几条 (默认 2)
+loop_per_frame: 5               # 每次尝试最多留几条 (默认 2)
 
 # 候选总数上限
-loop_max: 6000                  # 候选总数上限 (默认 6000)
+loop_max: 60000                  # 候选总数上限 (默认 6000)
 
 # 回环的 inlier 门。比窗口内的重叠门(0.2)严得多 ——
 # 回环配错一条会把整段轨迹拽歪, 窗口内配错只影响局部。
@@ -322,12 +324,12 @@ loop_max: 6000                  # 候选总数上限 (默认 6000)
 # (要关掉整条回环加 --no_loop)
 loop_min_inlier: 0.6            # 回环的 inlier 门 (默认 0.6, 比窗口内的 0.2 重叠门严得多)
 loop_min_inlier_rev: 0.45       # **反向**回环的 inlier 门 (比同向松: 反向照到的是相反那一面)
-loop_submap: 0                  # 回环用 **submap2submap**: 每端取 +-n 帧拼局部 submap 再配 (0=单帧, 默认)
+loop_submap: 3                  # 回环用 **submap2submap**: 每端取 +-n 帧拼局部 submap 再配 (0=单帧, 默认)
 loop_submap_radius: 25          # 拼 submap 时邻帧到中心帧的距离上限 (默认 25)。
 loop_ba: 1                      # 拼 loop submap 之前先对那 (2n+1) 帧做一次**局部 BA** (默认 1)。
 loop_sigma_t: 0                 # 回环约束的平移 sigma。<=0 = 沿用 --ba_rel_t (默认)。
 loop_sigma_r: 0                 # 回环约束的旋转 sigma。<=0 = 沿用 --ba_rel_r
-loop_anti_w: 0.5                # 反向回环的**权重**相对同向的倍数 (默认 0.5 = 一半)。
+loop_anti_w: 0.50                # 反向回环的**权重**相对同向的倍数 (默认 0.5 = 一半)。
 dump_loop: 0                    # **debug**: 落盘前 n 个回环候选 (0=关)。注意 --dump_cross 只管
 dump_pcd: 0                     # dump 时是否**也存 pcd** (默认 0 = 只存 png)。
 
@@ -374,7 +376,7 @@ intra_win: 40                   # 分窗处理的窗口帧数, 窗口间 50% 重
 # ---- 跨 session 约束: 重叠区域的划分 (--incr 的 buildCross 用) ----
 
 # 沿共位段每隔多少米开一个重叠区域(m)
-region_step: 100                # 沿共位段每隔多少米开一个重叠区域 (默认 150)
+region_step: 50                # 沿共位段每隔多少米开一个重叠区域 (默认 150)
 
 # 每个重叠区域的半径(m), 参照帧从这个范围内取
 region_radius: 40               # 每个重叠区域的半径 (默认 40)

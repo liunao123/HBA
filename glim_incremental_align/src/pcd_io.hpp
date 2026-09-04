@@ -686,11 +686,18 @@ class LasStream {
     }
     return true;
   }
+  /// @param ok   与 pts 等长; ok[k]=0 = 这个点没投到任何图像上
+  /// @param drop true = **未上色的点直接不写** (需要 rgb 和 ok 都给了才生效)。
+  ///             为什么要有这个: 不删的话它们以黑色写进 las, 而 las 里颜色和强度并存 ——
+  ///             按颜色渲染时那些黑点会盖在真实结构上, 看起来像洞或阴影。单相机只覆盖
+  ///             前视一小片, 所以"未上色"是多数而不是少数。
   void add(const std::vector<Eigen::Vector4d>& pts, const std::vector<double>* ints,
            const std::vector<Eigen::Matrix<std::uint8_t, 3, 1>>* rgb,
-           const std::vector<char>* ok = nullptr) {
+           const std::vector<char>* ok = nullptr, bool drop = false) {
     const bool hi = ints && ints->size() == pts.size();
     const bool hc = rgb && rgb->size() == pts.size();
+    // drop 只在真的有颜色和 ok 时生效 —— 否则 --no_color 下会把所有点删光
+    const bool do_drop = drop && hc && ok && ok->size() == pts.size();
     buf_.clear();
     buf_.reserve(pts.size() * 26);
     const auto put = [&](const void* p, std::size_t n) {
@@ -698,6 +705,8 @@ class LasStream {
       buf_.insert(buf_.end(), c, c + n);
     };
     for (std::size_t k = 0; k < pts.size(); k++) {
+      // 必须在更新包围盒和 n_ **之前**跳过, 否则被删的点仍会撑大 las 头里的包围盒
+      if (do_drop && !(*ok)[k]) continue;
       const double ux = pts[k].x() + uo_.x(), uy = pts[k].y() + uo_.y(), uz = pts[k].z();
       xmn_ = std::min(xmn_, ux); xmx_ = std::max(xmx_, ux);
       ymn_ = std::min(ymn_, uy); ymx_ = std::max(ymx_, uy);

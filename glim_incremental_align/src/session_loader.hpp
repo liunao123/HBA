@@ -55,6 +55,11 @@ struct SessionData {
   std::string name;
   fs::path root;
   Eigen::Vector2d utm_center{0, 0};
+  /// 这个 session 的位姿为了并到**基准 session 的世界系**而被平移的量 (= 原 utm_center
+  /// - base_utm)。统一世界系时 utm_center 会被改写成 base_utm, 原值就丢了 —— 而把优化后
+  /// 的位姿写回原始 egomotions 目录时必须减掉它, 否则写出去的 position 和该 clip 自己的
+  /// calibration/vehicle_params.json 里的 utm_center 不在同一个系里, 差几百米还不报错。
+  Eigen::Vector2d utm_shift{0, 0};
   Eigen::Isometry3d T_v_l = Eigen::Isometry3d::Identity();
   std::vector<Frame> frames;  // 按 clip、再按时间排序
 };
@@ -516,9 +521,33 @@ inline bool isClip(const fs::path& p, const std::string& pose_dir) {
          fs::is_directory(p / "calibration");
 }
 
+/// @brief 目录名里带 '.' = 数据还处在**临时/中间状态**, 不该参与优化。
+///
+/// 实际见到的样子:
+///   WL_CG7797_clip_20260817_nudge4.staging-7d6acb0480404e3792cf644cfc80d9f9
+/// 上游生成/搬运数据时先落成 `<正式名>.staging-<uuid>`, 全部写完才改名成正式的。
+/// 扫到这种目录说明它**正在被写**, 或者写了一半就中断了 —— 帧可能不全、位姿可能还没落盘。
+/// 拿它去优化就是用残缺数据配约束, 而增量建图里污染过的位姿下一轮会被当成可信初值复用,
+/// 错误一直往后传 (与 --max_io_fail 那条守门要防的是同一类事故)。
+///
+/// 判据就是**名字里有没有 '.'**: 正式的 session 名形如 <车牌>_clip_<日期>_<地点><序号>,
+/// 全是字母数字和下划线, 一个点都没有。所以这条判据不会误伤正常数据。
+inline bool isStagingDir(const fs::path& p) {
+  return p.filename().string().find('.') != std::string::npos;
+}
+
+/// @brief 把跳过的临时目录报一遍。**必须打印** —— 否则 session 凭空少一个,
+///        而清单里看不出任何原因, 只能去翻数据目录才知道发生了什么。
+inline void reportStaging(const std::vector<std::string>& skipped) {
+  if (skipped.empty()) return;
+  printf("  跳过 %zu 个**临时状态**的目录 (名字里带 '.', 数据可能不全):\n", skipped.size());
+  for (const auto& n : skipped) printf("    %s\n", n.c_str());
+}
+
 inline std::vector<fs::path> discoverSessions(
   const fs::path& root, const std::string& pose_dir, const std::string& data_mode = "clips") {
   std::vector<fs::path> out;
+  std::vector<std::string> skipped;   // 临时状态的目录, 最后统一报一遍
   if (!fs::is_directory(root)) return out;
 
   if (data_mode == "keyframe") {
@@ -528,14 +557,20 @@ inline std::vector<fs::path> discoverSessions(
       return out;
     }
     for (const auto& e : fs::directory_iterator(root)) {
-      if (e.is_directory() && isKeyframeSession(e.path())) out.push_back(e.path());
+      if (!e.is_directory() || !isKeyframeSession(e.path())) continue;
+      if (isStagingDir(e.path())) { skipped.push_back(e.path().filename().string()); continue; }
+      out.push_back(e.path());
     }
     std::sort(out.begin(), out.end());
+    reportStaging(skipped);
     return out;
   }
 
   for (const auto& e : fs::directory_iterator(root)) {
     if (!e.is_directory()) continue;
+    // 临时目录在**看它有没有 clip 之前**就跳过 —— 它可能正在被写, 遍历它既没意义
+    // 也可能撞上写到一半的文件
+    if (isStagingDir(e.path())) { skipped.push_back(e.path().filename().string()); continue; }
     const fs::path clips_dir = fs::is_directory(e.path() / "clips") ? e.path() / "clips" : e.path();
     if (!fs::is_directory(clips_dir)) continue;
 
@@ -549,6 +584,7 @@ inline std::vector<fs::path> discoverSessions(
     if (has_clip) out.push_back(e.path());
   }
   std::sort(out.begin(), out.end());
+  reportStaging(skipped);
   return out;
 }
 
