@@ -33,6 +33,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -81,7 +82,106 @@ struct LoadOptions {
   // 实测 fuse_lidar 每帧 200023 点、front_lidar 92341 点(46%), 而两者的**外参逐比特相同**
   // (即 fuse 的点本来就在 front_lidar 系里), 所以切换时不用动外参。
   std::string lidar_dir = "fuse_lidar";
+  // grid 过滤 (见下面 filterSessionsByGrid) 用: 非空指针 = 这个 session 只加载指针指向的
+  // 这些 clip, 不扫整个 session 目录。由调用方在每个 session 之前设置, 指向
+  // filterSessionsByGrid 建的那份分组表里对应的一项。
+  // 为什么用指针而不是拷贝进来: LoadOptions 在多个 session 之间复用, 这样每次只需要
+  // 换指向, 不用整份拷一遍。为空指针(默认) = 不筛选, loadSession 退回扫整个目录。
+  const std::vector<fs::path>* grid_clips = nullptr;
 };
+
+// -----------------------------------------------------------------------------
+// grid 过滤: 从一个 txt 文件里读出**显式指定**的 clip 目录列表, 只加载这些 clip,
+// 而不是像平常那样把 root 下每个 session 目录的全部 clip 都扫进来。
+//
+// 用途: 按地理格子(grid cell)导出的清单里, 落在同一个格子的 clip 可能来自几十个
+// 不同 session, 每个 session 也许只贡献一两个 clip —— 这时不该把整个 session 目录
+// 都加载进来(绝大多数帧根本不在这个格子附近, 白白吃内存和 IO)。
+//
+// 这**不是**一个独立的 data_mode: --root 仍然是真正的数据根目录(discoverSessions 照常
+// 扫出全部 session), --grid_file 只是在此基础上做一层筛选。这样才能正确处理两种都
+// 实际出现过的目录布局 —— 有的数据集一个日期一个 session 目录, 有的把很多天的 clip
+// 混堆在同一个 "clips/" 池子里当成一个 session —— 不用去猜 clip 路径的层级结构,
+// 直接问 discoverSessions 已经找到的那份 session 列表"这个 clip 在你下面吗"就行。
+//
+// 文件格式 (与 grid_*.txt 导出工具的格式一致): 以 '#' 开头的行是注释(允许出现
+// 元数据, 比如格子中心的经纬度), 其余每行一个 clip 目录的绝对路径。
+// -----------------------------------------------------------------------------
+
+/// @brief 读 grid 文件, 返回其中列出的 clip 目录 (原始路径, 不做存在性检查)。
+inline std::vector<fs::path> readGridClips(const fs::path& grid_file) {
+  std::vector<fs::path> out;
+  std::ifstream is(grid_file.string());
+  if (!is) {
+    std::cerr << "[grid] 打不开 grid 文件: " << grid_file << "\n";
+    return out;
+  }
+  std::string ln;
+  while (std::getline(is, ln)) {
+    if (!ln.empty() && ln.back() == '\r') ln.pop_back();
+    const auto first = ln.find_first_not_of(" \t");
+    if (first == std::string::npos || ln[first] == '#') continue;   // 空行 / 注释
+    const auto last = ln.find_last_not_of(" \t");
+    out.push_back(fs::path(ln.substr(first, last - first + 1)));
+  }
+  return out;
+}
+
+/// @brief 按 grid 文件过滤 discoverSessions() 找到的 session 列表。
+///
+/// 每个列出的 clip 目录按**路径前缀**匹配到 all_sessions 里的某一个 session 目录
+/// (取匹配最长的那个, 防止 sessionA 恰好是 sessionAB 的前缀这种误判) —— 不去猜
+/// "clips/" 在路径里的哪一级, 因为 discoverSessions 已经用同一套规则找出了真正的
+/// session 目录, 直接问它就不会跟目录布局的两种变体(见上面的说明)对不上。
+///
+/// @param all_sessions discoverSessions() 的完整结果 (未过滤)
+/// @param grid_map     输出: session 目录(字符串) -> 该 session 下被指定的 clip 目录列表。
+///                     调用方在 loadSession 每个 session 之前把对应项的指针塞进
+///                     LoadOptions::grid_clips。
+/// @return all_sessions 的一个子集(保持原有顺序): 只留下至少命中一个 clip 的那些。
+inline std::vector<fs::path> filterSessionsByGrid(
+  const fs::path& grid_file, const std::vector<fs::path>& all_sessions,
+  std::map<std::string, std::vector<fs::path>>& grid_map) {
+  grid_map.clear();
+  const auto clips = readGridClips(grid_file);
+  std::size_t n_missing = 0, n_nosession = 0;
+  for (const auto& clip : clips) {
+    if (!fs::is_directory(clip)) {
+      if (n_missing < 20) std::cerr << "[grid] clip 目录不存在, 跳过: " << clip << "\n";
+      n_missing++;
+      continue;
+    }
+    const std::string cs = clip.string();
+    const fs::path* best = nullptr;
+    std::size_t best_len = 0;
+    for (const auto& s : all_sessions) {
+      const std::string ss = s.string();
+      if (cs.size() > ss.size() && cs.compare(0, ss.size(), ss) == 0 && cs[ss.size()] == '/' &&
+          ss.size() > best_len) {
+        best = &s;
+        best_len = ss.size();
+      }
+    }
+    if (!best) {
+      if (n_nosession < 20) std::cerr << "[grid] clip 不属于任何已发现的 session, 跳过: " << clip << "\n";
+      n_nosession++;
+      continue;
+    }
+    grid_map[best->string()].push_back(clip);
+  }
+  if (n_missing) std::cerr << "[grid] 共 " << n_missing << " 个 clip 目录不存在, 已跳过\n";
+  if (n_nosession)
+    std::cerr << "[grid] 共 " << n_nosession << " 个 clip 不属于任何已发现的 session (--root 给对了吗?), 已跳过\n";
+  std::vector<fs::path> out;
+  for (const auto& s : all_sessions) {
+    if (grid_map.count(s.string())) out.push_back(s);
+  }
+  std::size_t n_hit = 0;
+  for (const auto& [k, v] : grid_map) n_hit += v.size();
+  printf("  [grid_file] %s: 列出 %zu 个 clip, 命中 %zu 个, 分属 %zu / %zu 个已发现的 session\n",
+         grid_file.string().c_str(), clips.size(), n_hit, out.size(), all_sessions.size());
+  return out;
+}
 
 // -----------------------------------------------------------------------------
 // keyframe 模式 (dwm_data)
@@ -595,17 +695,29 @@ inline bool loadSession(const fs::path& session_root, int index, SessionData& ou
   out.root = session_root;
   out.frames.clear();
 
-  const fs::path clips_dir = fs::is_directory(session_root / "clips") ? session_root / "clips" : session_root;
-
   std::vector<fs::path> clip_roots;
-  for (const auto& e : fs::directory_iterator(clips_dir)) {
-    if (e.is_directory() && isClip(e.path(), opt.pose_dir)) clip_roots.push_back(e.path());
-  }
-  std::sort(clip_roots.begin(), clip_roots.end());
-
-  if (clip_roots.empty()) {
-    std::cerr << "[load] no clip under " << clips_dir << "\n";
-    return false;
+  if (opt.grid_clips) {
+    // grid 过滤: 只加载调用方显式指定的那些 clip, 不扫整个 session 目录 ——
+    // 这批 clip 是按地理格子挑出来的, session 目录里的其余 clip 大多离这个格子很远。
+    for (const auto& c : *opt.grid_clips) {
+      if (isClip(c, opt.pose_dir)) clip_roots.push_back(c);
+      else std::cerr << "[grid] 不是合法的 clip 目录 (缺 " << opt.pose_dir << "/sensors/calibration), 跳过: " << c << "\n";
+    }
+    std::sort(clip_roots.begin(), clip_roots.end());
+    if (clip_roots.empty()) {
+      std::cerr << "[load] grid 里指定给 " << session_root << " 的 clip 一个都加载不了\n";
+      return false;
+    }
+  } else {
+    const fs::path clips_dir = fs::is_directory(session_root / "clips") ? session_root / "clips" : session_root;
+    for (const auto& e : fs::directory_iterator(clips_dir)) {
+      if (e.is_directory() && isClip(e.path(), opt.pose_dir)) clip_roots.push_back(e.path());
+    }
+    std::sort(clip_roots.begin(), clip_roots.end());
+    if (clip_roots.empty()) {
+      std::cerr << "[load] no clip under " << clips_dir << "\n";
+      return false;
+    }
   }
 
   bool got_center = false, got_extr = false;

@@ -36,11 +36,20 @@
 #
 # 每行的 # 是一行摘要, 和 --help 是同一句话; 参数上方的多行块是实测记录。
 # =============================================================================
-root: "/media/tyjt/Elements/WG_wuling/test_grid_data/"  # 数据根目录
-out: "/media/tyjt/Elements/WG_wuling/test_grid_data/result/"  # 输出目录
+root: "/media/tyjt/Elements/WG_wuling/test_grid_data_more/"  # 数据根目录
+out: "/media/tyjt/Elements/WG_wuling/test_grid_data_more/result/"  # 输出目录
 
 # clips | keyframe
 data_mode: "clips"              # clips | keyframe (默认 clips)
+
+# 非空 = 只加载这个 txt 文件里列出的 clip (每行一个 clip 目录绝对路径, # 开头是注释),
+# 而不是 root 下每个 session 目录的全部 clip —— root 仍是真正的数据根目录, 这个只是
+# 在它之上再筛一层。clip 按路径前缀匹配到 discoverSessions 已经找到的某个 session
+# 目录下, 匹配到的那批 session 就是 --incr 里的 "session"(只是每个 session 只加载
+# 清单里点到的那几个 clip); --sess_order/--sa/--sb 仍按 session 名(目录名)选。
+# 用于按地理格子(grid cell)挑数据: 同一格子的 clip 常常来自几十个不同 session、
+# 每个 session 也许只贡献一两个 clip, 这时不该把那些 session 的全部帧都加载进来。
+grid_file: ""                    # 非空 = 按这个 txt 文件筛选 clip (每行一个 clip 目录路径, 空 = 不筛选)
 
 # egomotions | localized。必须 egomotions:
 # localized 的 orientation 四元数是坏的(与自身 euler 差中位 4.44°/最大 25.5°)
@@ -61,7 +70,7 @@ write_back_dir: "localized"  # 写回的目录名 (默认 opt_egomotions), 与 e
 incr: true                      # 开启增量模式 (取代 --joint 的两 session 逻辑)
 # 位姿+约束存档目录。**有存档 = 已优化, 本次跳过**。
 # 按 pcd 路径匹配并要求 100% 覆盖, 帧集一变就当作待优化而不是静默错位。
-pose_store: "/media/tyjt/Elements/WG_wuling/test_grid_data/result_pose/"  # 位姿存档目录 (默认 <out>/poses)。**有存档 = 已优化, 本次跳过**
+pose_store: "/media/tyjt/Elements/WG_wuling/test_grid_data_more/result_pose/"  # 位姿存档目录 (默认 <out>/poses)。**有存档 = 已优化, 本次跳过**
 redo: ""                        # 强制重做这些 session (即使有存档)
 # 并入顺序。第一个是基准(只做自身 BA, 外参在它身上估一次然后固定)。
 # 留空 = 按目录序。
@@ -198,9 +207,9 @@ ba_chi2: 0                      # >0 时按卡方阈值剔除异常帧间约束�
 
 # Ceres 迭代次数
 ba_iters: 50                    # Ceres 迭代上限
-ba_visual: true                # BA 里再加视觉重投影约束 (隐含 --ba)
+ba_visual: false                # BA 里再加视觉重投影约束 (隐含 --ba)
 ba_sigma_px: 3.6                # 视觉重投影的 sigma, 单位像素 (默认 3.6, 实测校准值)
-vis_cams: ""                    # 视觉用哪些相机 (默认全部)
+vis_cams: "front_pinhole_wide"                    # 视觉用哪些相机 (默认全部)
 
 # 给外参补 yaw 修正(度)。0 = 不补 ——
 # [实测] 把外参放进 BA 后它只动 0.002~0.151° 且符号不一致,

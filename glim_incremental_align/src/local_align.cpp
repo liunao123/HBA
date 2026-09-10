@@ -82,6 +82,10 @@ struct Opt {
   std::string attitude_from = "quat";
   std::string lidar_dir = "fuse_lidar";
   std::string pose_src = "sparse";
+  // 非空 = 只加载这个 txt 文件里列出的 clip (每行一个 clip 目录路径, '#' 开头是注释),
+  // 而不是 --root 下每个 session 目录的全部 clip。--root 仍是真正的数据根目录,
+  // 这个只是在它之上再做一层筛选 —— 见 session_loader.hpp 里 filterSessionsByGrid 的说明。
+  std::string grid_file;
   int sa = 0, sb = 1;              // A = 提供 submap 的 session; B = 要优化的 session
   double cx = 0, cy = 0;           // 邻域中心 (与日志里的轨迹包围盒同一坐标系)
   double radius = 30.0;            // 邻域半径 (m): A 取 submap, B 取待配准帧
@@ -265,6 +269,10 @@ struct Opt {
   int loop_max = 6000;             // 候选总数上限
   double loop_min_inlier = 0.7;    // 回环的 inlier 门 (比窗口内严: 配错会把整段轨迹拽歪)
   double loop_min_inlier_rev = 0.6; // 反向回环的 inlier 门 (放宽反向匹配)
+  // 回环配准后 above-ground nn 的 **p90** 上限 (m); <=0 = 关闭。道理和 --cross_nn_p90_max
+  // 完全一样(中位数对最多 50% 的离群点免疫, 测不出"大片平面滑动 + 局部真错位"这种组合),
+  // 只是这里管的是同 session 回环而不是跨 session。默认关闭, 理由同上。
+  double loop_nn_p90_max = 0.0;
   // 回环用 **submap2submap** 而不是 scan2scan: 每端取 +-n 帧按当前位姿拼成局部 submap
   // 再配。0 = 单帧(原行为)。反向重访时单帧的视场重叠很低(同一根杆子只看到相反那一面),
   // 拼成一段路的 submap 之后共同可见的表面大得多。
@@ -353,6 +361,19 @@ struct Opt {
   double cross_sigma_xy = 0.09;    // 跨 session 约束的 sigma。**实测值**: 六处锚点的
                                    // 配准后 nn 是 0.070~0.103, 所以 0.09 是它的真实精度。
   double cross_sigma_r = 0.005;
+  // 跨session 配准后 above-ground nn 的 **p90** 上限 (m); <=0 = 关闭这道门(旧行为)。
+  //
+  // 为什么中位数不够: 实测发现一批"配准后中位 nn 很小(甚至贴着 target 自身重影)、
+  // inlier 很高"却仍被人眼判定为明显错位的帧 —— 共同点是画面里有一大片(墙面/围栏/
+  // 平坦结构)在配准方向上近似自相似, 点对点最近邻对**沿该结构切向的滑动**不敏感
+  // (与"nn 对地面滑动近乎全盲"是同一个盲区, 只是发生在非地面的大片平面结构上), 于是
+  // 中位数(对最多 50% 的离群点免疫)完全测不出真正错位的那部分(某根杆子/墙角/独立
+  // 结构), 而那部分恰恰是人眼一眼就能看出来的。p90 会被这 10%+ 的离群点顶起来,
+  // 中位数正常但 p90 异常正是这种"大片可疑滑动 + 局部真错位"组合的指纹。
+  // 默认关闭(<=0): 没有在这批数据上实测校准过合适的绝对阈值, 强行给一个数可能反而
+  // 错杀正常帧 —— 开启前建议先跑几轮 --dump_cross, 从日志/文件名里的 nnP90 分布里
+  // 挑一个数(经验上可以先试 target 自身重影(tgt_ghost)的 2~3 倍)。
+  double cross_nn_p90_max = 0.0;
 };
 
 
@@ -396,6 +417,7 @@ static std::vector<ParamField> paramFields(Opt& o) {
   F('S', "attitude_from", &o.attitude_from, "quat | euler (默认 euler)"),
   F('S', "lidar_dir", &o.lidar_dir, "clips: sensors/ 下哪个雷达 (默认 fuse_lidar)"),
   F('S', "pose_src", &o.pose_src, "keyframe: sparse | odoms (默认 sparse)"),
+  F('S', "grid_file", &o.grid_file, "非空 = 按这个 txt 文件筛选 clip (每行一个 clip 目录路径, 空 = 不筛选)"),
   F('I', "sa", &o.sa, "A 的 session 下标。**只有非增量的单点模式用**, --incr 下无效"),
   F('I', "sb", &o.sb, "B 的 session 下标。**只有非增量的单点模式用**, --incr 下无效"),
   F('D', "cx", &o.cx, "邻域中心 x (命令行 --center x,y)。**只有非增量的单点模式用**, --incr 下无效"),
@@ -491,6 +513,7 @@ static std::vector<ParamField> paramFields(Opt& o) {
   F('I', "loop_max", &o.loop_max, "候选总数上限 (默认 6000)"),
   F('D', "loop_min_inlier", &o.loop_min_inlier, "回环的 inlier 门 (默认 0.6, 比窗口内的 0.2 重叠门严得多)"),
   F('D', "loop_min_inlier_rev", &o.loop_min_inlier_rev, "**反向**回环的 inlier 门 (比同向松: 反向照到的是相反那一面)"),
+  F('D', "loop_nn_p90_max", &o.loop_nn_p90_max, "回环配准后 nn 的 p90 上限 (m); <=0 = 关闭(默认)"),
   F('I', "loop_submap", &o.loop_submap, "回环用 **submap2submap**: 每端取 +-n 帧拼局部 submap 再配 (0=单帧, 默认)"),
   F('D', "loop_submap_radius", &o.loop_submap_radius, "拼 submap 时邻帧到中心帧的距离上限 (默认 25)。"),
   F('I', "loop_ba", &o.loop_ba, "拼 loop submap 之前先对那 (2n+1) 帧做一次**局部 BA** (默认 1)。"),
@@ -528,6 +551,7 @@ static std::vector<ParamField> paramFields(Opt& o) {
     F('#', "跨 session 约束的权重 (--incr 的最终联合优化用)", nullptr),
   F('D', "cross_sigma_xy", &o.cross_sigma_xy, "跨 session 约束的 sigma (默认 0.09)"),
   F('D', "cross_sigma_r", &o.cross_sigma_r, "跨 session 约束的旋转 sigma (默认 0.005)"),
+  F('D', "cross_nn_p90_max", &o.cross_nn_p90_max, "跨session 配准后 nn 的 p90 上限 (m); <=0 = 关闭(默认)"),
   };
 }
 
@@ -656,10 +680,10 @@ static bool diffParams(const fs::path& f, Opt& o) {
     "clamp_planar", "z_above", "intra_win", "intra_pair_dist", "ba_min_overlap",
     "ba_pair_voxel", "ba_pair_iters", "ba_max_corr", "nms_win_deltas", "nms_loop", "nms_cross",
     "loop", "loop_dist", "loop_min_gap", "loop_step", "loop_per_frame", "loop_max",
-    "loop_min_inlier", "loop_min_inlier_rev", "loop_min_arc", "loop_submap",
+    "loop_min_inlier", "loop_min_inlier_rev", "loop_min_arc", "loop_submap", "loop_nn_p90_max",
     "loop_submap_radius", "loop_ba", "loop_cluster_dist", "loop_cluster_max",
     "b_max_dist", "b_max_dyaw", "b_bidir", "cross_per_sess", "cross_ba", "cross_ba_edges",
-    "cross_ba_max", "cross_src_win", "region_step", "region_radius", "region_max_frames",
+    "cross_ba_max", "cross_src_win", "cross_nn_p90_max", "region_step", "region_radius", "region_max_frames",
     "drop_isolated", "drop_static", "drop_frames", "load_roi_x", "load_roi_y", "load_roi_size",
     "yaw_fix_deg", "opt_ext", "ba_visual", "ba_sigma_px",
   };
@@ -774,6 +798,26 @@ static void usage() {
                            euler_angles 自相差 4.44 度中位 / 25.5 度最大, 坏的是四元数。
   --lidar_dir <s>       clips: sensors/ 下哪个雷达 (默认 fuse_lidar)
   --pose_src <s>        keyframe: sparse | odoms (默认 sparse)
+  --grid_file <a.txt>   非空 = 只加载这个文件里列出的 clip, 而不是 --root 下每个 session
+                        目录的全部 clip (--root 仍是真正的数据根目录, 这只是在它之上
+                        再做一层筛选)。每行一个 clip 目录的绝对路径, '#' 开头是注释。
+                        clip 按**路径前缀**匹配到 discoverSessions 已经找到的某个 session
+                        目录下(取匹配最长的那个), 匹配到的那批 session 就是 --incr 里的
+                        "session"(只是每个 session 只加载清单里点到的那几个 clip);
+                        --sess_order / --sa/--sb 仍按 session 名(目录名)选。
+                        为什么不去猜 clip 路径的层级结构、而要问 discoverSessions:
+                        实测数据集有两种布局都出现过 —— 有的一个日期一个 session 目录
+                        (session_root/clips/<clip>, 每个 session 目录下只有一两个 clip),
+                        有的把很多天的 clip 混堆在同一个 "clips/" 池子里当成一个 session
+                        (session_root/clips/<clipA>, <clipB>, ... 全是同一个 session 的
+                        平级 clip)。这两种情况下 clip 路径的形状是**一样的**
+                        (.../<X>/clips/<clip>), 唯一能分辨 X 到底是不是 session 目录的
+                        办法就是问 discoverSessions —— 它已经用同一套规则找出了真正的
+                        session, 直接按前缀匹配就不会跟目录布局的哪种变体对不上。
+                        为什么需要这个筛选: 按地理格子导出的清单里, 落在同一格子的 clip
+                        常常来自几十个不同 session、每个 session 也许只贡献一两个 clip ——
+                        这时不该把那些 session 的全部帧都加载进来, 绝大多数根本不在这个
+                        格子附近, 只会白白吃内存和 IO。
 
   --frame_voxel <m>     单帧体素 (默认 0.25)
   --submap_voxel <m>    submap 体素 = target 点间距 (默认 0.15)
@@ -987,6 +1031,18 @@ static void usage() {
                         新 session 只能单方面往老的上凑, 而两边各有误差时正确解是各让一半。
                         放开它几乎不要钱: 7.5 万条边/3.6 万参数的稀疏图解一次是秒级,
                         真正的成本在配准。
+  --loop_nn_p90_max <m>  回环配准后 nn 的 **p90** 上限 (m); <=0 = 关闭(默认)。
+                        为什么中位数(--loop_min_inlier 那道 nn 变差门用的也是中位数)不够:
+                        它对最多 50% 的离群点免疫 —— 一段回环里如果只有局部结构(某根杆子/
+                        墙角)配错、其余是同一片大致平坦的结构(墙面/围栏)在配准方向上近似
+                        自相似, 点对点最近邻对**沿该结构切向的滑动**不敏感(这和"nn 对地面
+                        滑动近乎全盲"是同一类盲区, 只是发生在非地面的平面结构上), 中位数
+                        测不出真正错位的那部分, p90 会被那 10%+ 的离群点顶起来。
+                        中位数正常但 p90 异常, 就是"大片可疑滑动 + 局部真错位"的指纹 ——
+                        实测里有 inlier 很高、nn 中位很小却被人眼判定明显错位的帧, 都是这种。
+                        默认关闭: 没有在具体数据上校准过绝对阈值, 强开可能错杀正常帧;
+                        建议先跑 --dump_loop, 从落盘文件名/日志里的 nn 分布挑一个数
+                        (经验上可以先试 target 自身重影的 2~3 倍)。
   --dump_cross <n>      **debug**: 每次 scan-to-submap 都存下来, 最多 n 帧 (默认 0=关)
                         输出到 <out>/cross/ :
                           r<区域>_submap.pcd            该区域的 target (前面所有 session 拼的)
@@ -1052,6 +1108,14 @@ static void usage() {
   --cross_sigma_r <rad> 跨 session 约束的旋转 sigma (默认 0.005)
   --cross_sigma_xy <m>  跨 session 约束的 sigma (默认 0.09)
                         **实测值**: 六处锚点上 B 配准后的 nn 是 0.070~0.103。
+  --cross_nn_p90_max <m>  跨session 配准后 nn 的 **p90** 上限 (m); <=0 = 关闭(默认)。
+                        道理与 --loop_nn_p90_max 完全一样(见那条的说明): 现有的采纳门
+                        (--min_inlier / --max_corr / nn 中位数不变差)全部基于中位数或
+                        总体 inlier, 对"一大片近似平面结构在切向滑动、只有局部结构真的
+                        配错"这种情况**免疫**——中位数看不出来, p90 会被顶起来。
+                        默认关闭: 没有校准过通用阈值, 建议先用 --dump_cross 看分布
+                        (文件名/日志会带 nn 的中位数, 打开这道门后会一并打印 p90),
+                        经验上可以先试 target 自身重影(区域日志里的 tgt_ghost)的 2~3 倍。
   --scan_overlap        只扫两条轨迹的共位情况然后退出, 不做配准。
                         **选 --center 之前先跑这个**: 两个 session 可能只是穿过同一片区域
                         而没走同一条路(实测某路口最近 A 帧也有 18m 远、航向差中位 92 度),
@@ -1093,6 +1157,7 @@ static bool parse(int argc, char** argv, Opt& o) {
     else if (a == "--attitude_from") ns(o.attitude_from);
     else if (a == "--lidar_dir") ns(o.lidar_dir);
     else if (a == "--pose_src") ns(o.pose_src);
+    else if (a == "--grid_file") ns(o.grid_file);
     else if (a == "--sa") ni(o.sa);
     else if (a == "--sb") ni(o.sb);
     else if (a == "--radius") nd(o.radius);
@@ -1181,6 +1246,7 @@ static bool parse(int argc, char** argv, Opt& o) {
     else if (a == "--loop_max") ni(o.loop_max);
     else if (a == "--loop_min_inlier") nd(o.loop_min_inlier);
     else if (a == "--loop_min_inlier_rev") nd(o.loop_min_inlier_rev);
+    else if (a == "--loop_nn_p90_max") nd(o.loop_nn_p90_max);
     else if (a == "--cross_ba") ni(o.cross_ba);
     else if (a == "--cross_ba_edges") ni(o.cross_ba_edges);
     else if (a == "--cross_ba_max") ni(o.cross_ba_max);
@@ -1210,6 +1276,7 @@ static bool parse(int argc, char** argv, Opt& o) {
     else if (a == "--region_max_frames") ni(o.region_max_frames);
     else if (a == "--cross_sigma_xy") nd(o.cross_sigma_xy);
     else if (a == "--cross_sigma_r") nd(o.cross_sigma_r);
+    else if (a == "--cross_nn_p90_max") nd(o.cross_nn_p90_max);
     else if (a == "--load_roi") {
       const std::string v = argv[++i];
       const auto c1 = v.find(','), c2 = v.find(',', c1 + 1);
@@ -1599,11 +1666,21 @@ static std::vector<std::int64_t> buildOcc(const std::vector<Eigen::Vector4d>& pt
 
 /// @brief 只用**地面以上**的点算中位最近邻。全部点会被路面主导, 对横向错位近乎全盲
 ///        (实测低估约一倍: 0.146 vs 0.207 / 0.163 vs 0.369)。
+///
+/// @param p90_out 不为空时额外输出 p90 (第 90 百分位)。
+///        **为什么中位数不够**: 中位数对最多 50% 的离群点免疫 —— 一帧里若只有一部分
+///        结构(某根杆子、某个墙角)配错、其余大片是同一个(近似)平面在自身表面内"滑动"
+///        (法向最近邻代价对沿切向的位移不敏感, 见上面那句注释里说的"横向错位近乎全盲",
+///        这里说的是**同一种盲区在非地面的大片平面结构上一样成立**), 中位数可以完全
+///        看不出这部分错位, 而 p90 会被那 10%+ 的离群点顶起来。
+///        [实测] 见 --cross_nn_p90_max 的注释: 一帧 inlier=0.89 nn 中位 0.06 却被人眼
+///        判定明显错位的案例, 就是这种"大片平面滑动 + 局部结构配错"的组合。
 static double aboveGroundNN(const gtsam_points::PointCloud& tgt, const ialign::GroundMap& gm,
                            const gtsam_points::KdTree& tree, const gtsam_points::PointCloud& src,
                            const Eigen::Isometry3d& T, double z_above, int max_q, double cap,
                            const std::vector<std::int64_t>* occ = nullptr, double occ_cell = 2.0,
-                           long* n_used = nullptr, long* n_out = nullptr) {
+                           long* n_used = nullptr, long* n_out = nullptr,
+                           double* p90_out = nullptr) {
   (void)tgt;
   std::vector<double> d;
   long nout = 0;
@@ -1627,8 +1704,14 @@ static double aboveGroundNN(const gtsam_points::PointCloud& tgt, const ialign::G
   }
   if (n_used) *n_used = static_cast<long>(d.size());
   if (n_out) *n_out = nout;
-  if (d.size() < 20) return -1.0;
-  std::nth_element(d.begin(), d.begin() + d.size() / 2, d.end());
+  if (d.size() < 20) {
+    if (p90_out) *p90_out = -1.0;
+    return -1.0;
+  }
+  // max_q 封顶在几千, 全排序比 nth_element 贵不了多少, 而 p90_out 需要一个二次统计量,
+  // 全排一次比对 median/p90 分别做 nth_element 更省事也更不容易出错。
+  std::sort(d.begin(), d.end());
+  if (p90_out) *p90_out = d[std::min(d.size() - 1, d.size() * 9 / 10)];
   return d[d.size() / 2];
 }
 
@@ -2585,7 +2668,10 @@ static IntraCon buildLoop(const ialign::SessionData& S, const std::vector<int>& 
   std::vector<char> ok(cand.size(), 0);
   std::vector<double> iv(cand.size(), -1), cv(cand.size(), -1);
   std::vector<double> nn0(cand.size(), -1), nn1(cand.size(), -1), gh(cand.size(), -1);
-  std::vector<char> why(cand.size(), 0);   // 1=重叠不足 2=inlier低 3=修正过大 4=异常
+  // 配准后 above-ground nn 的 p90 (--loop_nn_p90_max 用); 中位数(下面 why=5 那道门)对
+  // 最多 50% 的离群点免疫, 测不出"一大片平面结构切向滑动 + 局部真错位"这种组合。
+  std::vector<double> nn1p90(cand.size(), -1);
+  std::vector<char> why(cand.size(), 0);   // 1=重叠不足 2=inlier低 3=修正过大 4=异常 6=nn p90超限
   std::vector<char> is_anti(cand.size(), 0);
   Progress prog_lp(tag, "回环配准", cand.size());
 #pragma omp parallel for num_threads(o.num_threads) schedule(dynamic)
@@ -2689,7 +2775,8 @@ static IntraCon buildLoop(const ialign::SessionData& S, const std::vector<int>& 
       const auto occ = buildOcc(pi, 2.0);
       gtsam_points::KdTree tr(ci->points, ci->size());
       nn0[c] = aboveGroundNN(*ci, gm, tr, *cj, T0, o.z_above, 3000, 3.0, &occ, 2.0);
-      nn1[c] = aboveGroundNN(*ci, gm, tr, *cj, T1, o.z_above, 3000, 3.0, &occ, 2.0);
+      nn1[c] = aboveGroundNN(*ci, gm, tr, *cj, T1, o.z_above, 3000, 3.0, &occ, 2.0, nullptr,
+                             nullptr, &nn1p90[c]);
       // 目标端 submap 自身重影 = 这条约束的精度上限
       if (sm_mode && hA.size() > 5000 && hB.size() > 5000) {
         std::vector<double> none;
@@ -2724,6 +2811,9 @@ static IntraCon buildLoop(const ialign::SessionData& S, const std::vector<int>& 
     else if (cv[c] > o.ba_max_corr) { why[c] = 3; }
     // nn 变差 = 配准把它推离了, 无论 inlier 多高都不要 (与 buildCross 的判据一致)
     else if (nn0[c] > 0 && nn1[c] > 0 && nn1[c] > nn0[c]) { why[c] = 5; }
+    // p90 门: 中位数正常但 p90 超限 = 大概率"大片平面结构切向滑动 + 局部真错位"
+    // (与 buildCross 的 --cross_nn_p90_max 同一个道理); 默认关闭(<=0)。
+    else if (o.loop_nn_p90_max > 0 && nn1p90[c] > o.loop_nn_p90_max) { why[c] = 6; }
     else { rr[c] = T1; ok[c] = 1; }
 
     // ---- debug 落盘 ----
@@ -2732,9 +2822,11 @@ static IntraCon buildLoop(const ialign::SessionData& S, const std::vector<int>& 
       const int seq = nldump++;
       if (seq < o.dump_loop) {
         char base[224];
-        std::snprintf(base, sizeof(base), "l%04d_%s_nn%03d_g%+04d_%s_i%05d_j%05d_inl%02d_corr%03d",
-                      seq, dd < 30.0 ? "same" : (dd >= 150.0 ? "anti" : "cross"),
+        std::snprintf(base, sizeof(base),
+                      "l%04d_%s_nn%03d_p%03d_g%+04d_%s_i%05d_j%05d_inl%02d_corr%03d", seq,
+                      dd < 30.0 ? "same" : (dd >= 150.0 ? "anti" : "cross"),
                       static_cast<int>(std::lround(std::max(0.0, nn1[c]) * 100)),
+                      static_cast<int>(std::lround(std::max(0.0, nn1p90[c]) * 100)),
                       static_cast<int>(std::lround((nn0[c] - nn1[c]) * 100)), ok[c] ? "OK" : "REJ",
                       i, j, static_cast<int>(std::lround(std::max(0.0, iv[c]) * 100)),
                       static_cast<int>(std::lround(std::min(9.99, std::max(0.0, cv[c])) * 100)));
@@ -2755,8 +2847,9 @@ static IntraCon buildLoop(const ialign::SessionData& S, const std::vector<int>& 
         std::snprintf(lb, sizeof(lb), "SOURCE %s FRAME %d (%zu PTS)  DYAW %.0FDEG",
                       sm_mode ? "SUBMAP AROUND" : "SCAN", j, cj->size(), dd);
         std::snprintf(lm3, sizeof(lm3),
-                      "%s INLIER=%.2f CORR=%.2FM | ABOVE-GROUND NN %.3F->%.3F M | ARC GAP %.0FM",
-                      ok[c] ? "ACCEPTED" : "REJECTED", std::max(0.0, iv[c]), cv[c], nn0[c], nn1[c],
+                      "%s%s INLIER=%.2f CORR=%.2FM | ABOVE-GROUND NN %.3F->%.3F M (P90 %.3F) | ARC GAP %.0FM",
+                      ok[c] ? "ACCEPTED" : "REJECTED", why[c] == 6 ? " (P90 门)" : "",
+                      std::max(0.0, iv[c]), cv[c], nn0[c], nn1[c], nn1p90[c],
                       std::abs(A[j] - A[i]));
         ialign::LoopImageParams ip;
         ip.res = 0.08;
@@ -2768,7 +2861,7 @@ static IntraCon buildLoop(const ialign::SessionData& S, const std::vector<int>& 
     }
   }
   std::vector<double> inls, corrs, nnv, ghv;
-  std::size_t d1 = 0, d2 = 0, d3 = 0, d4 = 0, d5 = 0;
+  std::size_t d1 = 0, d2 = 0, d3 = 0, d4 = 0, d5 = 0, d6 = 0;
   // 收集被采纳的候选用于聚类过滤: 同一地点（距离阈值内）只保留若干条
   struct AccItem { int li, lj; Eigen::Isometry3d T; double inl, corr, nn; bool anti; };
   std::vector<AccItem> accs;
@@ -2787,6 +2880,7 @@ static IntraCon buildLoop(const ialign::SessionData& S, const std::vector<int>& 
       case 2: d2++; break;
       case 3: d3++; break;
       case 5: d5++; break;
+      case 6: d6++; break;
       default: d4++; break;
     }
   }
@@ -2858,14 +2952,14 @@ static IntraCon buildLoop(const ialign::SessionData& S, const std::vector<int>& 
   };
   printf("  [%s] 回环: 候选=%zu  模式=%s\n"
          "        采纳=%zu (聚类前 %zu)  剔除: 重叠不足=%zu inlier<%.2f(反向%.2f)=%zu"
-         " 修正>%.1fm=%zu nn变差=%zu 异常=%zu\n"
+         " 修正>%.1fm=%zu nn变差=%zu nn_p90超限=%zu 异常=%zu\n"
          "        inlier 中位=%.3f  修正量 中位=%.3f p90=%.3f m  配准后 nn 中位=%.3f m\n",
          tag, cand.size(),
          o.loop_submap > 0
            ? ("submap2submap (每端 +-" + std::to_string(o.loop_submap) + " 帧)").c_str()
            : "scan2scan (单帧)",
          out.rel.size(), accs.size(), d1, o.loop_min_inlier, o.loop_min_inlier_rev, d2,
-         o.ba_max_corr, d3, d5, d4, med(inls), med(corrs), p90(corrs), med(nnv));
+         o.ba_max_corr, d3, d5, d6, d4, med(inls), med(corrs), p90(corrs), med(nnv));
   if (!ghv.empty())
     printf("        **目标端 submap 自身重影 中位=%.3f m** <- 这条约束的精度上限;"
            " 上面的 nn 若明显小于它, 是往模糊里塞出来的\n", med(ghv));
@@ -3223,6 +3317,7 @@ struct CrossCon {
   std::vector<double> sig_scale;
   std::vector<double> nn0, nn1;
   int n_region = 0, n_try = 0, n_colocated = 0;
+  int n_rej_p90 = 0;   // 因 --cross_nn_p90_max 门被剔的候选数 (0 = 门关着或没剔到)
 };
 
 /// @brief 当前 session 的帧逐一配到"前面所有 session 拼出的 submap"上, 产出跨 session 约束。
@@ -3564,6 +3659,11 @@ static CrossCon buildCross(const std::vector<RefFrame>& ref, const ialign::Sessi
     std::vector<Eigen::Isometry3d> res(rb.size());
     std::vector<char> ok(rb.size(), 0);
     std::vector<double> n0(rb.size(), -1), n1(rb.size(), -1);
+    // 配准后 above-ground nn 的 p90 (--cross_nn_p90_max 用); 见 aboveGroundNN 里的说明:
+    // 中位数(上面 n0/n1 的判据)对最多 50% 的离群点免疫, 一大片平面结构切向滑动 +
+    // 局部真错位这种组合会被它完全放过, p90 才会被那部分离群点顶起来。
+    std::vector<double> n1p90(rb.size(), -1);
+    std::atomic<int> n_rej_p90_region{0};
     Progress prog_x(cur.name.c_str(), "跨session 配准 (本区域)", rb.size());
 #pragma omp parallel for num_threads(o.num_threads) schedule(dynamic)
     for (std::int64_t q = 0; q < static_cast<std::int64_t>(rb.size()); q++) {
@@ -3627,10 +3727,17 @@ static CrossCon buildCross(const std::vector<RefFrame>& ref, const ialign::Sessi
       }
       const Eigen::Isometry3d Ta = o.clamp_planar ? clampPlanar(T, T0) : T;
       n0[q] = aboveGroundNN(*tgt, gm, tree, *src, T0, o.z_above, 3000, 3.0, &occ, 2.0);
-      n1[q] = aboveGroundNN(*tgt, gm, tree, *src, Ta, o.z_above, 3000, 3.0, &occ, 2.0);
+      n1[q] = aboveGroundNN(*tgt, gm, tree, *src, Ta, o.z_above, 3000, 3.0, &occ, 2.0, nullptr,
+                            nullptr, &n1p90[q]);
       const double corr = (Ta.translation().head<2>() - T0.translation().head<2>()).norm();
+      // p90 门: 中位数(下面那个 !(n0>0 && n1>0 && n1>n0))对最多 50% 的离群点免疫,
+      // 一批帧 inlier 很高、nn 中位很小却仍是明显错位, 共同点是一大片近似平面结构在
+      // 配准方向上自相似(点对点最近邻对沿其切向的滑动不敏感), 只有局部结构真的配错 ——
+      // 那部分离群点中位数测不出来, p90 会被顶起来。默认关闭(<=0), 需要显式校准阈值。
+      const bool p90_bad = o.cross_nn_p90_max > 0 && n1p90[q] > o.cross_nn_p90_max;
+      if (p90_bad) n_rej_p90_region.fetch_add(1, std::memory_order_relaxed);
       const bool acc = inl >= o.min_inlier && corr <= o.max_corr &&
-                       !(n0[q] > 0 && n1[q] > 0 && n1[q] > n0[q]);
+                       !(n0[q] > 0 && n1[q] > 0 && n1[q] > n0[q]) && !p90_bad;
       if (acc) {
         res[q] = Ta;
         ok[q] = 1;
@@ -3641,8 +3748,9 @@ static CrossCon buildCross(const std::vector<RefFrame>& ref, const ialign::Sessi
         const int seq = ndump++;
         if (seq < o.dump_cross) {
           char base[224];
-          std::snprintf(base, sizeof(base), "r%02d_nn%03d_g%+04d_%s_f%05d_inl%02d_corr%03d", rid,
-                        static_cast<int>(std::lround(std::max(0.0, n1[q]) * 100)),
+          std::snprintf(base, sizeof(base), "r%02d_nn%03d_p%03d_g%+04d_%s_f%05d_inl%02d_corr%03d",
+                        rid, static_cast<int>(std::lround(std::max(0.0, n1[q]) * 100)),
+                        static_cast<int>(std::lround(std::max(0.0, n1p90[q]) * 100)),
                         static_cast<int>(std::lround((n0[q] - n1[q]) * 100)), acc ? "OK" : "REJ", j,
                         static_cast<int>(std::lround(std::max(0.0, inl) * 100)),
                         static_cast<int>(std::lround(std::min(9.99, std::max(0.0, corr)) * 100)));
@@ -3657,14 +3765,14 @@ static CrossCon buildCross(const std::vector<RefFrame>& ref, const ialign::Sessi
             // savePts(cdir / (std::string(base) + "_before.pcd"), vb);
             savePts(cdir / (std::string(base) + "_after.pcd"), va);
           }
-          char la[128], lb[128], lm3[256];
+          char la[128], lb[128], lm3[288];
           std::snprintf(la, sizeof(la), "REF SUBMAP R%02d (%zu PTS FROM %zu PREV-SESSION FRAMES, SELF-GHOST %.3FM)",
                         rid, tgt->size(), ra.size(), std::max(0.0, tgt_ghost));
           std::snprintf(lb, sizeof(lb), "%s FRAME %d", cur.name.c_str(), j);
           std::snprintf(lm3, sizeof(lm3),
-                        "%s INLIER=%.2f CORR=%.2FM | ABOVE-GROUND NN %.3F->%.3F M (TGT SELF %.3F)",
-                        acc ? "ACCEPTED" : "REJECTED", std::max(0.0, inl), corr, n0[q], n1[q],
-                        std::max(0.0, tgt_ghost));
+                        "%s%s INLIER=%.2f CORR=%.2FM | ABOVE-GROUND NN %.3F->%.3F M (P90 %.3F, TGT SELF %.3F)",
+                        acc ? "ACCEPTED" : "REJECTED", p90_bad ? " (P90 门)" : "", std::max(0.0, inl),
+                        corr, n0[q], n1[q], n1p90[q], std::max(0.0, tgt_ghost));
           ialign::LoopImageParams ip;
           ip.res = 0.08;
           ip.tol = 0.15;
@@ -3674,6 +3782,7 @@ static CrossCon buildCross(const std::vector<RefFrame>& ref, const ialign::Sessi
         }
       }
     }
+    out.n_rej_p90 += n_rej_p90_region.load();
     for (std::size_t q = 0; q < rb.size(); q++) {
       out.n_try++;
       if (!ok[q]) continue;
@@ -3736,6 +3845,10 @@ static CrossCon buildCross(const std::vector<RefFrame>& ref, const ialign::Sessi
   if (n_refedge)
     printf("  目标端联合 BA 产出的跨session ref<->ref 约束: %zu 条 (同位置的 AB/AC/BC)\n",
            n_refedge);
+  if (o.cross_nn_p90_max > 0 && out.n_rej_p90)
+    printf("  --cross_nn_p90_max %.3f: 剔除了 %d 个候选 (中位数正常但 nn p90 超限 —— 大概率是\n"
+           "    大片平面结构切向滑动 + 局部真错位, 中位数看不出来的那种)\n",
+           o.cross_nn_p90_max, out.n_rej_p90);
   if (o.cross_per_sess) {
     std::map<int, int> per;
     for (std::size_t k = 0; k < cand_e.size(); k++) {
@@ -5945,7 +6058,12 @@ int main(int argc, char** argv) {
   lo.data_mode = o.data_mode;
   lo.pose_src = o.pose_src;
   lo.lidar_dir = o.lidar_dir;
-  const auto dirs = ialign::discoverSessions(o.root, lo.pose_dir, o.data_mode);
+  auto dirs = ialign::discoverSessions(o.root, lo.pose_dir, o.data_mode);
+  // --grid_file: 在 root 下已发现的 session 之上再筛一层, 只留有命中 clip 的那些
+  // session, 并且每个 session 只加载清单里点到的那几个 clip (grid_map 记着分组结果,
+  // loadSession 前要把对应项塞进 lo.grid_clips)。
+  std::map<std::string, std::vector<fs::path>> grid_map;
+  if (!o.grid_file.empty()) dirs = ialign::filterSessionsByGrid(o.grid_file, dirs, grid_map);
   // sa/sb 只有单锚点/--joint 模式用; --incr 走 sess_order, 单个 session 也合法
   if (!o.incr && (o.sa < 0 || o.sb < 0 || o.sa >= static_cast<int>(dirs.size()) ||
                   o.sb >= static_cast<int>(dirs.size()))) {
@@ -5984,6 +6102,7 @@ int main(int argc, char** argv) {
     }
     std::vector<ialign::SessionData> S(order.size());
     for (std::size_t k = 0; k < order.size(); k++) {
+      if (!o.grid_file.empty()) lo.grid_clips = &grid_map.at(dirs[order[k]].string());
       if (!ialign::loadSession(dirs[order[k]], order[k], S[k], lo)) {
         std::cerr << "加载 session 失败: " << dirs[order[k]] << "\n";
         return 1;
@@ -5993,9 +6112,10 @@ int main(int argc, char** argv) {
       std::cerr << "一个 session 都没加载到\n";
       return 1;
     }
-    // 统一世界系到第一个 session 的 utm_center
+    // 统一世界系到第一个 session 的 utm_center —— 这只是**坐标系**的原点选哪个 session,
+    // 与下面挑"BA 处理顺序第一个/基准"是两件事(那个选的是轨迹最长的, 不一定是它)。
     const Eigen::Vector2d base_utm = S[0].utm_center;
-    printf("\n  基准 session = %s (utm_center %.2f, %.2f)\n", S[0].name.c_str(), base_utm.x(),
+    printf("\n  坐标系原点取自 %s 的 utm_center (%.2f, %.2f)\n", S[0].name.c_str(), base_utm.x(),
            base_utm.y());
     for (std::size_t k = 1; k < S.size(); k++) {
       const Eigen::Vector2d d2 = S[k].utm_center - base_utm;
@@ -6050,12 +6170,55 @@ int main(int argc, char** argv) {
       for (auto& sd : S) ps.push_back(&sd);
       dropIsolated(ps, o.drop_isolated, o.drop_static, o.drop_frames != 0);
     }
+    // ---- 挑轨迹最长的 session 做处理顺序里的第一个 (= BA 锚点/基准) ----
+    //
+    // runIncr 依次处理 S[0], S[1], ...; 第一个被处理、当时还没有任何已优化 session 的
+    // 那个, 就是"基准"—— 它只做自身 BA, 不与任何人建跨 session 约束, 后续 session 全部
+    // 拿它(以及后面陆续并入的)当参照去对齐。以前这个位置就是 sess_order/目录序里排第一
+    // 的那个, 纯粹是字典序或人为指定顺序的产物, 跟"适不适合当参照"没有关系。
+    //
+    // 换成显式挑**轨迹最长**(按累计弧长, 不是帧数或包围盒对角线 —— 原地打转的帧多
+    // 但走不远): 轨迹越长, 覆盖的路网越大, 后续新 session 越容易和它找到共位段、建上
+    // 跨 session 约束; 反过来如果基准本身只是一小段路, 大概率反而是新 session 覆盖
+    // 了基准没走到的地方, 跨 session 约束建不出来。
+    //
+    // 只把最长的那个挪到最前面, **其余 session 保持原有的相对顺序不变**(sess_order
+    // 或目录序里除它以外的先后关系照旧) —— std::rotate(first, mid, mid+1) 恰好做的
+    // 就是这件事: 把 [first, mid) 整体后移紧跟在 mid 后面, 不改变彼此的相对顺序。
+    if (S.size() > 1) {
+      const auto trajLen = [](const ialign::SessionData& s) {
+        double len = 0;
+        for (std::size_t i = 1; i < s.frames.size(); i++)
+          len += (s.frames[i].T_w_l.translation().head<2>() -
+                  s.frames[i - 1].T_w_l.translation().head<2>())
+                   .norm();
+        return len;
+      };
+      std::vector<double> lens(S.size());
+      std::size_t best = 0;
+      for (std::size_t k = 0; k < S.size(); k++) {
+        lens[k] = trajLen(S[k]);
+        if (lens[k] > lens[best]) best = k;
+      }
+      printf("\n  各 session 轨迹弧长 (用于挑基准):\n");
+      for (std::size_t k = 0; k < S.size(); k++)
+        printf("    %-34s %8.0f m%s\n", S[k].name.c_str(), lens[k], k == best ? "  <- 最长" : "");
+      if (best != 0) {
+        printf("  基准(处理顺序第一个) 改为 %s (原排在第 %zu 位, 其余 session 相对顺序不变)\n",
+               S[best].name.c_str(), best);
+        std::rotate(S.begin(), S.begin() + best, S.begin() + best + 1);
+      }
+    }
     fs::create_directories(o.out);
     return runIncr(o, S, base_utm, ce);
   }
 
   ialign::SessionData A, B;
-  if (!ialign::loadSession(dirs[o.sa], o.sa, A, lo) || !ialign::loadSession(dirs[o.sb], o.sb, B, lo)) {
+  if (!o.grid_file.empty()) lo.grid_clips = &grid_map.at(dirs[o.sa].string());
+  const bool okA = ialign::loadSession(dirs[o.sa], o.sa, A, lo);
+  if (!o.grid_file.empty()) lo.grid_clips = &grid_map.at(dirs[o.sb].string());
+  const bool okB = ialign::loadSession(dirs[o.sb], o.sb, B, lo);
+  if (!okA || !okB) {
     std::cerr << "加载 session 失败\n";
     return 1;
   }
