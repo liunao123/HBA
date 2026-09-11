@@ -330,6 +330,10 @@ struct SubmapCeresOpts {
   double sigma_rel_r = 0.01;    // 帧间相对位姿的旋转 sigma (rad)
   double attitude_w = 50.0;     // 姿态先验权重
   double huber = 1.0;           // Huber 核宽度
+  double cauchy = 1.0;          // >0 时帧间约束(RelPoseErrorExt)改用 Cauchy 核(尺度=此值),
+                                 // 优先于 huber(二者互斥, Ceres 一个残差块只能挂一个 loss);
+                                 // Cauchy 比 Huber 尾部压得更狠(接近 log, 大残差几乎不增长),
+                                 // 用来压制那些混进图里的错误约束(误配准导致的离群边)
   int iters = 50;
   double chi2_reject = 0.0;     // >0 时按卡方阈值剔除异常残差块后再解一轮
   double sigma_px = 2.5;        // 视觉重投影 sigma (px)。按实测离散度给, 见 ReprojResidual 注释
@@ -412,8 +416,10 @@ inline SubmapCeresStats optimizeSubmapCeresExt(
   po.loss_function_ownership = ceres::DO_NOT_TAKE_OWNERSHIP;
   ceres::Problem problem(po);
   ceres::HuberLoss huber(o.huber);
-  ceres::CauchyLoss cauchy(1.0);
-  ceres::LossFunction* loss = o.huber > 0 ? &huber : nullptr;
+  ceres::CauchyLoss cauchy(1.0);   // 视觉重投影用, 尺度固定 1.0 px
+  ceres::CauchyLoss rel_cauchy(o.cauchy > 0 ? o.cauchy : 1.0);   // 帧间约束用, 尺度=o.cauchy
+  ceres::LossFunction* loss = o.cauchy > 0 ? static_cast<ceres::LossFunction*>(&rel_cauchy)
+                            : (o.huber > 0 ? static_cast<ceres::LossFunction*>(&huber) : nullptr);
 
   const bool has_fixed = fixed.size() == static_cast<std::size_t>(n);
   for (int i = 0; i < n; i++) problem.AddParameterBlock(par[i].data(), 6);
@@ -556,6 +562,44 @@ inline SubmapCeresStats optimizeSubmapCeresExt(
     if (st.n_rel_g3)
       printf("      **反向回环**:   平移 %.3f 旋转 %.3f (%d 条)\n", st.rms_g3_t, st.rms_g3_r,
              st.n_rel_g3);
+  }
+
+  // 卡方剔除: 把马氏距离过大的相对位姿块去掉再解一轮。
+  //
+  // 为什么这里之前没有(只在下面 optimizeSubmapCeres 那个简化版里有): 这个函数(Ext 版,
+  // --incr 的 solveCalib 实际调的就是这个)是唯一一个每条边用**自己的 sigma** 白化的
+  // 版本(rel_sigma/rs[] —— 窗口边 0.035、跨session 0.09、回环/反向回环各自的值), 残差
+  // r[0..5] 在 RelPoseErrorExt 内部已经除过各自的 inv_sigma, 所以直接对它求平方和就是
+  // 一个按各自噪声水平白化过的马氏距离量级, 用同一个 chi2_reject 阈值去卡，比在只有单一
+  // 全局 sigma 的简化版里做还更准——那边窗口/跨session/回环全用一个 sigma_rel_t/r,
+  // 卡方距离本身就不公平。
+  //
+  // Huber(--ba_huber, 默认 1.0) 已经在加残差块时套在 RelPoseErrorExt 上了(loss 参数),
+  // 但 Huber 只是把超过阈值的残差从二次压成线性——**降低**坏边的影响, 不是**去掉**它,
+  // 一条严重配错的边依然会拖着解往错的方向走一点。chi2_reject 是真正的硬剔除:
+  // 白化残差平方和超过阈值的边直接 RemoveResidualBlock, 再解一轮。
+  if (o.chi2_reject > 0.0 && rel_ids.size() > 4) {
+    std::vector<ceres::ResidualBlockId> keep;
+    for (const auto id : rel_ids) {
+      double cost = 0.0;
+      double res[6] = {0, 0, 0, 0, 0, 0};
+      problem.EvaluateResidualBlock(id, false, &cost, res, nullptr);
+      double d2 = 0.0;
+      for (int k = 0; k < 6; k++) d2 += res[k] * res[k];
+      if (d2 > o.chi2_reject) {
+        problem.RemoveResidualBlock(id);
+        st.n_removed++;
+      } else {
+        keep.push_back(id);
+      }
+    }
+    if (st.n_removed > 0 && keep.size() >= 3) {
+      ceres::Solve(so, &problem, &sum);
+      st.cost_after = sum.final_cost;
+    }
+    if (o.report && st.n_removed > 0)
+      printf("    --ba_chi2 %.3g: 剔除了 %d / %zu 条帧间约束(白化残差平方和超限), 剩 %zu 条重解\n",
+             o.chi2_reject, st.n_removed, rel_ids.size(), keep.size());
   }
 
   T_w_v.resize(n);

@@ -38,6 +38,7 @@
 # =============================================================================
 root: "/media/tyjt/Elements/WG_wuling/test_grid_data_more/"  # 数据根目录
 out: "/media/tyjt/Elements/WG_wuling/test_grid_data_more/result/"  # 输出目录
+pose_store: "/media/tyjt/Elements/WG_wuling/test_grid_data_more/result_pose/"  # 位姿存档目录 (默认 <out>/poses)。**有存档 = 已优化, 本次跳过**
 
 # clips | keyframe
 data_mode: "clips"              # clips | keyframe (默认 clips)
@@ -62,7 +63,7 @@ attitude_from: "quat"           # quat | euler (默认 euler)
 lidar_dir: "fuse_lidar"         # clips: sensors/ 下哪个雷达 (默认 fuse_lidar)
 
 # ---- 把优化后的位姿写回原始数据目录 (**唯一会写 root 的功能**, 默认关) ----
-write_back: 1                   # 1 = 把优化后的位姿写回 root 下与 pose_dir 平级的新目录 (默认 0)
+write_back: 0                   # 1 = 把优化后的位姿写回 root 下与 pose_dir 平级的新目录 (默认 0)
 write_back_dir: "localized"  # 写回的目录名 (默认 opt_egomotions), 与 egomotions 平级
 
 # ---- 增量建图 (多 session 依次并入) ----
@@ -70,7 +71,6 @@ write_back_dir: "localized"  # 写回的目录名 (默认 opt_egomotions), 与 e
 incr: true                      # 开启增量模式 (取代 --joint 的两 session 逻辑)
 # 位姿+约束存档目录。**有存档 = 已优化, 本次跳过**。
 # 按 pcd 路径匹配并要求 100% 覆盖, 帧集一变就当作待优化而不是静默错位。
-pose_store: "/media/tyjt/Elements/WG_wuling/test_grid_data_more/result_pose/"  # 位姿存档目录 (默认 <out>/poses)。**有存档 = 已优化, 本次跳过**
 redo: ""                        # 强制重做这些 session (即使有存档)
 # 并入顺序。第一个是基准(只做自身 BA, 外参在它身上估一次然后固定)。
 # 留空 = 按目录序。
@@ -104,21 +104,24 @@ b_bidir: 0                      # 跨session 是否也收**反向**共位 (航�
 cross_per_sess: 0               # 1 = 每个被并入帧对**每个**之前的 session 各建一条边 (默认 0 = 只对最近的那个)
 
 # ---- 跨 session 配准: 两端都先做局部 BA, 再 submap2submap ----
-cross_ba: 0                     # 目标端 submap 先做一次**联合局部 BA** 再拼 (默认 0)。
+cross_ba: 1                     # 目标端 submap 先做一次**联合局部 BA** 再拼 (默认 0)。
 cross_ba_edges: 1               # 目标端 BA 产出的**跨session** ref<->ref 相对位姿也发成约束 (默认 1)。
 cross_ba_max: 40                # 目标端做 BA 的帧数上限 (默认 80)。150 帧同时带协方差+体素图约 1.2GB。
-cross_src_win: 5                # 源端也取当前帧 +-n 帧拼 submap (先局部 BA), 做 submap2submap (默认 0=单帧)。
+cross_src_win: 3                # 源端也取当前帧 +-n 帧拼 submap (先局部 BA), 做 submap2submap (默认 0=单帧)。
 
 # 单帧体素(m)。[实测] 0.10 -> 0.05 让墙面厚度从 0.117 降到 0.071 (-40%)。
 # 那 0.117 里很大一部分是**体素量化**: 真实几厘米厚的墙被 0.1 网格切成
 # 沿法向 2~3 层格心, 量出来的"厚度"就是体素尺度本身。
-frame_voxel: 0.05               # 单帧体素 (默认 0.25)
+frame_voxel: 0.05              # 单帧体素 (默认 0.25)
 
 # 拼 submap / 导出成图的体素(m) = target 点间距。与 frame_voxel 同量级
 submap_voxel: 0.1              # submap 体素 = target 点间距 (默认 0.15)
 
 # 距离下限(m), 去车身
 min_range: 5                    # 单帧点的最小距离 (m), <=0 = 关闭
+
+# z 下限(m, 雷达局部系): 低于这个高度物理上不该有有效回波, 大概率是路面多径/噪点
+min_z: -2.5                     # 单帧点的 z 下限 (m, 雷达局部系), 低于此高度物理上不该有回波 (默认 -2.5)
 
 # 距离上限(m)。[实测] 厚度与离轨迹距离几乎无关(0-10m 0.099 / 30-50m 0.109),
 # 所以收紧量程对厚度**没有**帮助, 只是少一些远处稀疏噪点
@@ -128,7 +131,7 @@ max_range: 80                   # 单帧点的最大距离 (m), <=0 = 关闭
 # 体素图比点间距还稀时, 源点必须落进与 target 点同一个格才算 inlier ->
 # 无论对齐多好 inlier 都塌到 0.2 量级, 帧全被剔, 而日志看不出异常。
 # 程序启动时有自检会打印警告。
-tgt_voxel: 0.2                  # target 体素图分辨率 (默认 0.9)
+tgt_voxel: 0.5                  # target 体素图分辨率 (默认 0.9)
 
 # scan-to-submap 的 VGICP 迭代次数
 iters: 20                       # VGICP 迭代 (默认 20)
@@ -147,10 +150,29 @@ min_inlier: 0.4                 # 采纳阈值 (默认 0.4)
 # 水平修正上限(m)
 max_corr: 2                     # 水平修正上限 (默认 2.0)
 
+# 跨session 配准后 nn 的 p90 上限(m): 中位数正常但 p90 超限 = 大概率"大片平面结构
+# 切向滑动 + 局部真错位"(中位数看不出来)。<=0 = 关闭。
+# [实测] 0.15 对真实数据太严(几乎全拒), 0.5 是按实际 p90 分布定的经验值。
+cross_nn_p90_max: 0.0           # 跨session 配准后 nn 的 p90 上限 (m); <=0 = 关闭(默认)
+
 # 地面以上多少米算竖直结构(m)。nn 一律只用地面以上的点 ——
 # 全部点的最近邻对路面沿面滑动是瞎的, [实测] 低估约一倍
 # (要采纳完整 6-DOF 加 --no_clamp; 默认压制 z/roll/pitch 取 INS)
-z_above: 0.5                    # 量 nn 时只统计**高于地面** z_above 的点 (m) —— 路面点会把差异平均掉
+z_above: 1.0                    # 量 nn 时只统计**高于地面** z_above 的点 (m) —— 路面点会把差异平均掉
+
+# 去地面重配准的旋转差门槛(度), buildLoop/buildCross 共用: 把地面点去掉、只用竖直
+# 结构以原配准结果为初值重新配一次, 跟原结果比旋转角度差多少——地面是水平大平面,
+# 对旋转的约束很弱却因为点数占大多数, 能把"竖直结构其实没对齐"这件事从残差里平掉。
+# [实测 20 例] 好案例 drot 0.02~0.11 度, 坏案例 0.18~1.09 度, 干净分成两段, 没有
+# 重叠——比去地面前后比平移差更稳(平移差在几条坏案例里跟好案例一样低, 分不出来)。
+# <=0 = 关闭。落盘(dump_loop/dump_cross)里都会多一张"去地面重配准"的俯视图,
+# 门关着也画, 方便先看图再定这个数。
+ground_drot_max: 0.1
+
+# 优化后姿态自检(度): 车在路上的车体姿态应当接近水平, roll/pitch 明显偏离大概率是
+# 这一帧配错了(被某条错误约束拽歪, 或者附近压根没有约束、只靠 INS 先验飘着)。
+# 纯诊断, 不影响任何求解——只是在最终联合优化之后把超过这个度数的关键帧列出来。
+attitude_warn_deg: 10            # 优化后姿态自检: roll/pitch 超过这个度数就告警 (纯诊断, 默认 10)
 clamp_planar: true              # 1 = 平面压制: z/roll/pitch 取 INS 不动 (默认开)。--no_clamp 关
 dyn_filter: true                # 1 = 剔动态物体 (clips 用 annotations/3dod 的 3D 框, 默认开)。--no_dyn_filter 关
 
@@ -160,7 +182,7 @@ dyn_filter: true                # 1 = 剔动态物体 (clips 用 annotations/3do
 dyn_ts_tol: 0.02                # 动态框与点云的时间戳容差 (默认 0.02)
 
 # 单锚点模式才用: 最多存多少帧的前后点云+图
-dump_max: 200                   # 最多存多少帧的前后点云+图 (默认 200)
+dump_max: 2000                   # 最多存多少帧的前后点云+图 (默认 200)
 num_threads: 10                 # 线程数 (默认 6)
 scan_overlap: false             # 只扫两条轨迹的共位情况然后退出, 不做配准。
 scan_step: 150                  # --scan 沿轨迹的采样步长 (m)
@@ -175,7 +197,7 @@ ba_min_overlap: 0.2             # 帧间建约束的最小重叠率 (默认 0.2)
 ba_pair_voxel: 0.3              # BA 内帧间 GICP 的体素 (m)
 
 # 帧间/回环 VGICP 的 LM 迭代次数
-ba_pair_iters: 20               # 帧间/回环 VGICP 的 LM 迭代次数 (默认 20)
+ba_pair_iters: 50               # 帧间/回环 VGICP 的 LM 迭代次数 (默认 20)
 
 # 帧间测量的修正上限(m), 超了不要这条约束(大概率配错了)
 ba_max_corr: 1                  # BA 内建帧间约束的最大帧间距离 (m), 超过就不建这条边
@@ -202,6 +224,9 @@ ba_att_w: 275                   # 姿态先验权重 (默认 275, 实测校准�
 # 帧间约束的 Huber 核宽度
 ba_huber: 1                     # Ceres 的 Huber 阈值 (0 = 不用鲁棒核)
 
+# >0 时帧间约束改用 Cauchy 核(尺度=此值), 优先于 ba_huber (默认关, 二者互斥)
+ba_cauchy: 1.0                    # >0 时帧间约束改用 Cauchy 核(尺度=此值), 优先于 ba_huber (默认 0)
+
 # >0 时按卡方阈值剔异常帧间约束后再解一轮 (默认关)
 ba_chi2: 0                      # >0 时按卡方阈值剔除异常帧间约束后再解一轮 (默认 0)
 
@@ -221,7 +246,7 @@ yaw_fix_deg: 0                  # 给雷达外参补 yaw 修正, 右乘到 T_w_l
 # [实测] 与 yaml 初值差 1.22°, 而且**外参必须跟着 g2o 走** ——
 # 漏了它下一轮位姿和雷达系约束对不上, 老 session 会被挪 3.56m
 # 平移默认不动: 杆臂在直路上和位置强耦合(病态)
-opt_ext: 1                      # 把**雷达外参 T_v_l 也放进 BA** 一起优化 (0=不动 1=只旋转 2=旋转+平移)
+opt_ext: 0                      # 把**雷达外参 T_v_l 也放进 BA** 一起优化 (0=不动 1=只旋转 2=旋转+平移)
 
 # ---- 导出点云上色 ----
 
@@ -333,25 +358,43 @@ loop_max: 60000                  # 候选总数上限 (默认 6000)
 # (要关掉整条回环加 --no_loop)
 loop_min_inlier: 0.6            # 回环的 inlier 门 (默认 0.6, 比窗口内的 0.2 重叠门严得多)
 loop_min_inlier_rev: 0.45       # **反向**回环的 inlier 门 (比同向松: 反向照到的是相反那一面)
-loop_submap: 3                  # 回环用 **submap2submap**: 每端取 +-n 帧拼局部 submap 再配 (0=单帧, 默认)
+
+# 回环配准后 nn 的 p90 上限(m), 同 cross_nn_p90_max 一个道理。之前一直是关的(0),
+# 实测发现一批反向回环 nn 中位=0.14~0.24m(正常)但 p90 高达 0.5~1.18m —— 图上能看到
+# 路边护栏/杆子这类结构红绿两团明显错开一截, 只是路面这种大平面把中位数拉正常了。
+# 反向回环本身因为照到物体相反那一面, p90 天然比同向高一些, 所以门比 cross 松:
+# 0.6 时能保住 43/61 条实测候选, 卡掉的都是图上能看出明显错位的那批(p90>=0.64)。
+loop_nn_p90_max: 0.6            # 回环配准后 nn 的 p90 上限 (m); <=0 = 关闭(默认)
+loop_submap: 5                  # 回环用 **submap2submap**: 每端取 +-n 帧拼局部 submap 再配 (0=单帧, 默认)
 loop_submap_radius: 25          # 拼 submap 时邻帧到中心帧的距离上限 (默认 25)。
 loop_ba: 1                      # 拼 loop submap 之前先对那 (2n+1) 帧做一次**局部 BA** (默认 1)。
 loop_sigma_t: 0                 # 回环约束的平移 sigma。<=0 = 沿用 --ba_rel_t (默认)。
 loop_sigma_r: 0                 # 回环约束的旋转 sigma。<=0 = 沿用 --ba_rel_r
 loop_anti_w: 0.50                # 反向回环的**权重**相对同向的倍数 (默认 0.5 = 一半)。
-dump_loop: 0                    # **debug**: 落盘前 n 个回环候选 (0=关)。注意 --dump_cross 只管
+# >0: 每个回环候选都存俯视图(和 --dump_cross 同一套 renderTopDownPair, 上下=配准前/后、
+# 左右=全部点/地面以上), 最多 n 个, 存到 <out>/loop/。文件名最前面是**生成序号**(不是
+# 质量分, 这点和 --dump_cross 不同, 见 --help)。
+dump_loop: 5000                  # **debug**: 落盘前 n 个回环候选 (0=关)。注意 --dump_cross 只管
 dump_pcd: 0                     # dump 时是否**也存 pcd** (默认 0 = 只存 png)。
 
 # ---- 约束去重 / 均匀化 (四维 NMS) ----
 nms_loop: 0                     # 回环用**四维 NMS** 去重 (m); <=0 = 用旧的中点聚类 loop_cluster_*
 nms_cross: 0                    # 跨session 用四维 NMS 去重 (m); <=0 = 不去重 (旧行为, 每帧一条)
 nms_win_deltas: ""              # 同session 窗口内**只建**这些帧号差的约束; 空 = 全建(默认)。
-loop_cluster_dist: 2            # 回环候选按位置聚类的半径 (m)
+loop_cluster_dist: 5            # 回环候选按位置聚类的半径 (m)
 loop_cluster_max: 1             # 每个聚类里最多留几条回环候选
+
+# 环路一致性检查: 同一聚类(同一地点重访)里 >=2 条候选时, 两两用**端点间的短程 INS
+# 相对位姿**互相预测验证, 把"互相一致"当边连通分量, 只留**最大的连通分量**(多数派),
+# 分量外的全部剔除(不看 inlier 高低; 最大分量不唯一——比如两派势均力敌分不出谁对——
+# 整簇都不要)。跟 nn/inlier/p90 不同, 这个是拿旁边一次独立测量互相验证, 能抓住
+# "统计量看着都正常但和旁边对不上"的情况。还没在真实数据上校准过阈值, 建议先跑一版
+# 看日志里打出来的"簇内环路一致性残差"分布(中位/p90/max)再定数。
+loop_cycle_max: 1                # 簇内环路一致性平移残差上限 (m); <=0 = 关闭(默认)
 
 # >0: 每次 scan-to-submap 都存 target/前后点云/俯视图, 最多 n 帧。
 # 全量下 900+ 次配准全存要 1GB 以上, 所以默认关。开的话 60 是个合适的值
-dump_cross: 500                 # **debug**: 每次 scan-to-submap 都存下来, 最多 n 帧 (默认 0=关)
+dump_cross: 5000                 # **debug**: 每次 scan-to-submap 都存下来, 最多 n 帧 (默认 0=关)
 
 # 连通半径(m)。相距 <=m 的帧算相连, 同一 clip 内时序相邻的帧无条件相连。
 # [实测] 正常关键帧间距中位 2.5~3.7m、最大 6.8m —— 给 5 会把正常轨迹切碎
@@ -385,7 +428,7 @@ intra_win: 40                   # 分窗处理的窗口帧数, 窗口间 50% 重
 # ---- 跨 session 约束: 重叠区域的划分 (--incr 的 buildCross 用) ----
 
 # 沿共位段每隔多少米开一个重叠区域(m)
-region_step: 50                # 沿共位段每隔多少米开一个重叠区域 (默认 150)
+region_step: 20                # 沿共位段每隔多少米开一个重叠区域 (默认 150)
 
 # 每个重叠区域的半径(m), 参照帧从这个范围内取
 region_radius: 40               # 每个重叠区域的半径 (默认 40)

@@ -137,6 +137,10 @@ struct Opt {
   double frame_voxel = 0.05;
   double submap_voxel = 0.05;      // submap 拼好后的体素 (= target 的点间距)
   double min_range = 5.0, max_range = 40.0;
+  // 单帧点的 z 下限(m), 按**雷达自身局部系**下的原始 z 值判(loadFrame 里做这一步时
+  // 还没转到世界系)。低于这个高度物理上不该有有效回波, 大概率是路面多径/噪点,
+  // 直接滤掉。要关掉就给一个非常小的值(比如 -1000)。
+  double min_z = -2.5;
   double tgt_voxel = 0.9 ; //  submap_voxel * 6.0;       // target 体素图分辨率, 必须 >= 3 x 点间距
   int iters = 20;
   bool fine = true;
@@ -145,6 +149,18 @@ struct Opt {
   double min_inlier = 0.4;
   double max_corr = 2.0;           // 水平修正上限 (m), 超了不采纳
   double z_above = 0.5;            // 地面以上多少米算竖直结构
+  // 去地面重配准的旋转差门槛(度), buildLoop/buildCross 共用。<=0 = 关闭(默认)。
+  // 把地面点去掉、只用竖直结构以原配准结果为初值重新配一次, 跟原结果比旋转角度差
+  // 多少——地面是水平大平面, 对旋转的约束很弱却因为点数占大多数, 能把"竖直结构其实
+  // 没对齐"这件事从总残差里"平"掉。[实测 20 例] 好案例 drot 0.02~0.11 度, 坏案例
+  // 0.18~1.09 度, 干净分成两段; 比去地面前后比平移差更稳(平移差在几条坏案例里
+  // 跟好案例一样低, 分不出来)。默认关闭, 建议先开 --dump_loop/--dump_cross 看落盘
+  // 图里新加的"去地面重配准"那行, 心里有数了再定这个数(可以先试 0.1)。
+  double ground_drot_max = 0.10; // degree
+  // 优化后姿态自检(度): 车在路上的车体姿态应当接近水平, roll/pitch 明显偏离大概率是
+  // 这一帧配错了(被某条错误约束拽歪, 或者压根没有约束只靠 INS 先验飘着)。
+  // 只是**告警**, 不影响任何求解——纯诊断, 帮助定位可疑关键帧。
+  double attitude_warn_deg = 10.0;
   bool clamp_planar = true;        // 只采纳 yaw+x,y; z/roll/pitch 取初值
   bool dyn_filter = true;          // 剔掉动态物体上的点 如果存在3dbox
   double dyn_ts_tol = 0.02;
@@ -188,7 +204,7 @@ struct Opt {
   // 又一次拿错量级的参照物。
   double ba_ins_xy = 0.40;
   double ba_rel_t = 0.035, ba_rel_r = 0.002;
-  double ba_att_w = 275.0, ba_huber = 1.0, ba_chi2 = 0.0;
+  double ba_att_w = 275.0, ba_huber = 1.0, ba_chi2 = 0.0, ba_cauchy = 1.0;
   int ba_iters = 50;
   bool ba_visual = false;   // [实测] 零收益: 跨session 0.069 vs 0.071、墙面厚度 0.0705 vs 0.0704, 而耗时约 5 倍          // 加视觉重投影约束
   double ba_sigma_px = 3.6;        // 实测 3.59, 见上表
@@ -321,6 +337,14 @@ struct Opt {
   std::string nms_win_deltas;
   double loop_cluster_dist = 2.0;  // 回环聚类半径 (m): 同一地点只保留少数匹配
   int loop_cluster_max = 1;        // 每个聚类最多保留多少条回环 (默认 1)
+  // 环路一致性检查: 同一簇(同一地点重访)里如果有 >=2 条候选, 它们理应测的是同一个
+  // 相对位姿。取簇内 inlier 最高的一条当参照, 用**簇内两条候选各自端点之间的短程 INS
+  // 相对位姿**(几米内, 局部可信, 全程窗口内约束的 3.5cm 可重复性就是这么来的)把参照
+  // 的测量值"搬"到另一条候选的端点上, 与那条候选自己配准出来的测量值比较——
+  // 差得多说明其中一条配错了(不需要额外配准, 只是复用已有的两次独立测量互相验证)。
+  // 只在簇内确有 >=2 条候选时才起作用(单条候选没有第二个独立来源可比, 查不出来)。
+  // <=0 = 关闭(默认)。
+  double loop_cycle_max = 0.0;      // 簇内环路一致性平移残差上限 (m); <=0 = 关闭(默认)
   // 每次 scan-to-submap 都把 target/源帧/配准前后 存成俯视图+pcd, 最多这么多帧 (0=关)。
   // 默认关: 全量下 900+ 次配准 x (2 份帧 pcd + png) + 每个区域一份 submap 要 1GB 以上。
   int dump_cross = 500;
@@ -373,7 +397,7 @@ struct Opt {
   // 默认关闭(<=0): 没有在这批数据上实测校准过合适的绝对阈值, 强行给一个数可能反而
   // 错杀正常帧 —— 开启前建议先跑几轮 --dump_cross, 从日志/文件名里的 nnP90 分布里
   // 挑一个数(经验上可以先试 target 自身重影(tgt_ghost)的 2~3 倍)。
-  double cross_nn_p90_max = 0.0;
+  double cross_nn_p90_max = 0.50;
 };
 
 
@@ -388,7 +412,7 @@ struct Opt {
 // 做法:
 //   --params <a.yaml>     读参数 (扁平的 key: value)
 //   命令行其余选项仍然生效, 且**在 yaml 之后应用** = 覆盖。这样做实验不必每次新建文件。
-//   每次运行把**生效后**的参数写到 <out>/params_effective.yaml 和 <store>/params.yaml。
+//   每次运行把**生效后**的参数写到 <store>/params.yaml (只此一份, 不再重复写 <out> 下)。
 //   写"生效后"而不是复制输入文件 —— 有命令行覆盖时, 只有生效值才是这次真正用的。
 //   下次跑时若 <store>/params.yaml 已存在, 逐项比对并**列出差异**, 配准类参数变了会明确警告。
 //
@@ -437,6 +461,7 @@ static std::vector<ParamField> paramFields(Opt& o) {
   F('D', "frame_voxel", &o.frame_voxel, "单帧体素 (默认 0.25)"),
   F('D', "submap_voxel", &o.submap_voxel, "submap 体素 = target 点间距 (默认 0.15)"),
   F('D', "min_range", &o.min_range, "单帧点的最小距离 (m), <=0 = 关闭"),
+  F('D', "min_z", &o.min_z, "单帧点的 z 下限 (m, 雷达局部系), 低于此高度物理上不该有回波 (默认 -2.5)"),
   F('D', "max_range", &o.max_range, "单帧点的最大距离 (m), <=0 = 关闭"),
   F('D', "tgt_voxel", &o.tgt_voxel, "target 体素图分辨率 (默认 0.9)"),
   F('I', "iters", &o.iters, "VGICP 迭代 (默认 20)"),
@@ -446,6 +471,10 @@ static std::vector<ParamField> paramFields(Opt& o) {
   F('D', "min_inlier", &o.min_inlier, "采纳阈值 (默认 0.4)"),
   F('D', "max_corr", &o.max_corr, "水平修正上限 (默认 2.0)"),
   F('D', "z_above", &o.z_above, "量 nn 时只统计**高于地面** z_above 的点 (m) —— 路面点会把差异平均掉"),
+  F('D', "ground_drot_max", &o.ground_drot_max,
+    "去地面重配准的旋转差门槛(度), buildLoop/buildCross 共用; <=0 = 关闭(默认)"),
+  F('D', "attitude_warn_deg", &o.attitude_warn_deg,
+    "优化后姿态自检: roll/pitch 超过这个度数就告警 (纯诊断, 不影响求解; 默认 10)"),
   F('B', "clamp_planar", &o.clamp_planar, "1 = 平面压制: z/roll/pitch 取 INS 不动 (默认开)。--no_clamp 关"),
   F('B', "dyn_filter", &o.dyn_filter, "1 = 剔动态物体 (clips 用 annotations/3dod 的 3D 框, 默认开)。--no_dyn_filter 关"),
   F('D', "dyn_ts_tol", &o.dyn_ts_tol, "动态框与点云的时间戳容差 (默认 0.02)"),
@@ -467,6 +496,8 @@ static std::vector<ParamField> paramFields(Opt& o) {
   F('D', "ba_rel_r", &o.ba_rel_r, "帧间旋转 sigma (默认 0.002, 实测校准值)"),
   F('D', "ba_att_w", &o.ba_att_w, "姿态先验权重 (默认 275, 实测校准值; 原 50 偏轻 5.5 倍)"),
   F('D', "ba_huber", &o.ba_huber, "Ceres 的 Huber 阈值 (0 = 不用鲁棒核)"),
+  F('D', "ba_cauchy", &o.ba_cauchy,
+    ">0 时帧间约束改用 Cauchy 核(尺度=此值), 优先于 ba_huber (默认 0 = 不用)"),
   F('D', "ba_chi2", &o.ba_chi2, ">0 时按卡方阈值剔除异常帧间约束后再解一轮 (默认 0)"),
   F('I', "ba_iters", &o.ba_iters, "Ceres 迭代上限"),
   F('B', "ba_visual", &o.ba_visual, "BA 里再加视觉重投影约束 (隐含 --ba)"),
@@ -528,6 +559,8 @@ static std::vector<ParamField> paramFields(Opt& o) {
   F('S', "nms_win_deltas", &o.nms_win_deltas, "同session 窗口内**只建**这些帧号差的约束; 空 = 全建(默认)。"),
   F('D', "loop_cluster_dist", &o.loop_cluster_dist, "回环候选按位置聚类的半径 (m)"),
   F('I', "loop_cluster_max", &o.loop_cluster_max, "每个聚类里最多留几条回环候选"),
+  F('D', "loop_cycle_max", &o.loop_cycle_max,
+    "簇内环路一致性平移残差上限 (m); <=0 = 关闭(默认)"),
   F('I', "dump_cross", &o.dump_cross, "**debug**: 每次 scan-to-submap 都存下来, 最多 n 帧 (默认 0=关)"),
   F('D', "drop_isolated", &o.drop_isolated, "连通半径 (默认 10, 0=关)。相距 <=m 的帧算相连, **只保留最大的"),
   F('D', "drop_static", &o.drop_static, "连通域自身空间尺度小于这个就整块丢 (默认 5)。"),
@@ -675,13 +708,13 @@ static bool diffParams(const fs::path& f, Opt& o) {
   // 影响已存档约束的键: 改了它们, 存档里的测量就不是同一套流程产出的
   static const std::set<std::string> kReg = {
     "root", "data_mode", "pose_dir", "attitude_from", "lidar_dir", "pose_src",
-    "frame_voxel", "submap_voxel", "tgt_voxel", "min_range", "max_range", "dyn_filter",
+    "frame_voxel", "submap_voxel", "tgt_voxel", "min_range", "max_range", "min_z", "dyn_filter",
     "dyn_ts_tol", "iters", "fine", "fine_corr", "fine_iters", "min_inlier", "max_corr",
-    "clamp_planar", "z_above", "intra_win", "intra_pair_dist", "ba_min_overlap",
+    "clamp_planar", "z_above", "ground_drot_max", "intra_win", "intra_pair_dist", "ba_min_overlap",
     "ba_pair_voxel", "ba_pair_iters", "ba_max_corr", "nms_win_deltas", "nms_loop", "nms_cross",
     "loop", "loop_dist", "loop_min_gap", "loop_step", "loop_per_frame", "loop_max",
     "loop_min_inlier", "loop_min_inlier_rev", "loop_min_arc", "loop_submap", "loop_nn_p90_max",
-    "loop_submap_radius", "loop_ba", "loop_cluster_dist", "loop_cluster_max",
+    "loop_submap_radius", "loop_ba", "loop_cluster_dist", "loop_cluster_max", "loop_cycle_max",
     "b_max_dist", "b_max_dyaw", "b_bidir", "cross_per_sess", "cross_ba", "cross_ba_edges",
     "cross_ba_max", "cross_src_win", "cross_nn_p90_max", "region_step", "region_radius", "region_max_frames",
     "drop_isolated", "drop_static", "drop_frames", "load_roi_x", "load_roi_y", "load_roi_size",
@@ -773,9 +806,8 @@ static void usage() {
                         两次参数必须完全一致** —— 存档复用只看"帧集是否 100%% 命中",
                         改配准参数**不会**让存档失效, 很容易把两套参数配出来的约束混进一张图。
                         命令行其余选项**在 yaml 之后应用 = 覆盖**, 做实验不必每次新建文件。
-                        每次运行把**生效后**的参数写到 <out>/params_effective.yaml 和
-                        <pose_store>/params.yaml; 存档里已有则逐项比对并列出差异,
-                        配准类参数变了会明确警告。
+                        每次运行把**生效后**的参数写到 <pose_store>/params.yaml (只此一份);
+                        存档里已有则逐项比对并列出差异, 配准类参数变了会明确警告。
                         未知键直接失败 —— 拼错一个键而照跑, 得到的是"改了却没生效"的假结论。
   --save_params <a.yaml>  把当前(默认值+本次命令行)参数写成 yaml 然后退出。用它生成初版模板。
   --root <dir>          数据根目录
@@ -850,6 +882,7 @@ static void usage() {
   --ba_pair_iters <n>   帧间/回环 VGICP 的 LM 迭代次数 (默认 20)
   --dyn_ts_tol <s>      动态框与点云的时间戳容差 (默认 0.02)
   --ba_chi2 <r>         >0 时按卡方阈值剔除异常帧间约束后再解一轮 (默认 0)
+  --ba_cauchy <r>       >0 时帧间约束改用 Cauchy 核(尺度=此值), 优先于 ba_huber (默认 0)
   --vis_cams <a,b>      视觉用哪些相机 (默认全部)
   --color               给导出的点云上色 (相机内外参投影, 另存 *_rgb.pcd)
   --no_color            关掉上色 (默认是开的; 只想看几何/跑对照实验时用)
@@ -927,9 +960,12 @@ static void usage() {
                        判读够用; pcd 是体积大头 (全量下好几 GB)。
   --dump_loop <n>      **debug**: 落盘前 n 个回环候选 (0=关)。注意 --dump_cross 只管
                        跨 session 的 scan2submap, 与回环无关。输出到 <out>/loop/ :
-                         l<序>_<same|cross|anti>_nn<配准后>_g<改善>_<OK|REJ>_i<>_j<>.png
+                         <序号>_l_<same|cross|anti>_nn<配准后>_p<p90>_g<改善>_<OK|REJ>_i<>_j<>.png
                          同名 _A.pcd (目标端) / _B_before.pcd / _B_after.pcd
-                       文件名把分数放最前, ls 天然按质量排序, ls -r 从最差看起。
+                       !! 这一路文件名**最前面是生成序号**(每落盘一个 +1), 不是质量分 ——
+                       与 --dump_cross 的"分数最前, ls 天然按质量排序"是两种不同约定:
+                       --dump_loop 是按生成顺序看这一路是怎么跑下来的, --dump_cross 是
+                       按质量从最差看起。
   回环**不判航向**: 只按距离(--loop_dist)和里程(--loop_min_arc)收候选, 一律用
                         --loop_min_inlier_rev 的门 + --loop_anti_w 的权重。
                         为什么去掉航向门: 原来同向门(<=30度)与反向门(>=150度)之间留出死区,
@@ -1043,6 +1079,36 @@ static void usage() {
                         默认关闭: 没有在具体数据上校准过绝对阈值, 强开可能错杀正常帧;
                         建议先跑 --dump_loop, 从落盘文件名/日志里的 nn 分布挑一个数
                         (经验上可以先试 target 自身重影的 2~3 倍)。
+  --loop_cycle_max <m>  环路一致性检查: 同一聚类(同一地点重访, 见 --loop_cluster_dist)里
+                        如果有 >=2 条候选, 它们测的应该是同一个相对位姿。两两之间用
+                        **各自端点之间的短程 INS 相对位姿**(几米内, 局部可信, 3.5cm
+                        可重复性就是这么来的)把一条候选的测量值"搬"到另一条候选的端点
+                        上互相预测验证, 把"互相一致"当边在簇内候选上连图求连通分量,
+                        只留**最大的连通分量**(多数派), 分量外的全部剔除——不是"信
+                        inlier 最高的那条"; 若最大分量不唯一(比如两派势均力敌, 分不出
+                        谁是多数), 整簇都不要, 不赌任何一派。
+                        这是唯一一个**不看这次配准自己的统计量(nn/inlier/p90 都是),
+                        而是拿另一次独立测量互相验证**的门, 能抓住"配准的统计量看着
+                        都正常, 但和旁边紧挨着的另一次独立测量对不上"这种情况。只在
+                        簇内确有 >=2 条候选时才起作用, 单条候选没有第二个独立来源可比,
+                        查不出来。默认关闭(<=0), 没在具体数据上校准过绝对阈值, 建议
+                        先跑一版看日志/dump 里打出来的簇内残差分布再定数。
+  --ground_drot_max <度> 去地面重配准的旋转差门槛, buildLoop/buildCross 共用。把地面点
+                        去掉、只用竖直结构以原配准结果为初值重新配一次, 跟原结果比
+                        旋转角度差多少——地面是水平大平面, 对旋转的约束很弱却因为点数
+                        占大多数, 能把"竖直结构其实没对齐"这件事从残差里平掉。
+                        [实测 20 例] 好案例 drot 0.02~0.11 度, 坏案例 0.18~1.09 度,
+                        干净分成两段没有重叠——比去地面前后比**平移**差更稳(平移差
+                        在几条坏案例里跟好案例一样低, 分不出来), 所以只卡旋转。
+                        默认关闭(<=0)。--dump_loop/--dump_cross 落盘时都会多存一张
+                        "<原文件名>_ground.png"(上=原结果 下=去地面重配结果), 门关着
+                        也画, 可以先看图再定这个数(可以先试 0.1)。
+  --attitude_warn_deg <度>  优化后姿态自检: 车在路上的车体姿态应当接近水平, roll/pitch
+                        明显偏离大概率是这一帧配错了(被某条错误约束拽歪, 或者压根没有
+                        约束只靠 INS 先验飘着)。**纯诊断, 不影响任何求解** —— 只是在
+                        最终联合优化(或跳过配准直接复用存档)之后, 把每一帧车体位姿的
+                        roll/pitch 拿出来, 超过这个度数就在日志里列出来(按严重程度排序,
+                        最多列 20 条)。默认 10 度。
   --dump_cross <n>      **debug**: 每次 scan-to-submap 都存下来, 最多 n 帧 (默认 0=关)
                         输出到 <out>/cross/ :
                           r<区域>_submap.pcd            该区域的 target (前面所有 session 拼的)
@@ -1166,6 +1232,7 @@ static bool parse(int argc, char** argv, Opt& o) {
     else if (a == "--b_max_dyaw") nd(o.b_max_dyaw);
     else if (a == "--frame_voxel") nd(o.frame_voxel);
     else if (a == "--min_range") nd(o.min_range);
+    else if (a == "--min_z") nd(o.min_z);
     else if (a == "--max_range") nd(o.max_range);
     else if (a == "--submap_voxel") nd(o.submap_voxel);
     else if (a == "--tgt_voxel") nd(o.tgt_voxel);
@@ -1176,6 +1243,8 @@ static bool parse(int argc, char** argv, Opt& o) {
     else if (a == "--min_inlier") nd(o.min_inlier);
     else if (a == "--max_corr") nd(o.max_corr);
     else if (a == "--z_above") nd(o.z_above);
+    else if (a == "--ground_drot_max") nd(o.ground_drot_max);
+    else if (a == "--attitude_warn_deg") nd(o.attitude_warn_deg);
     else if (a == "--no_clamp") o.clamp_planar = false;
     else if (a == "--no_dyn_filter") o.dyn_filter = false;
     else if (a == "--dump_max") ni(o.dump_max);
@@ -1196,6 +1265,7 @@ static bool parse(int argc, char** argv, Opt& o) {
     else if (a == "--ba_rel_r") nd(o.ba_rel_r);
     else if (a == "--ba_att_w") nd(o.ba_att_w);
     else if (a == "--ba_huber") nd(o.ba_huber);
+    else if (a == "--ba_cauchy") nd(o.ba_cauchy);
     else if (a == "--ba_chi2") nd(o.ba_chi2);
     else if (a == "--ba_iters") ni(o.ba_iters);
     else if (a == "--ba_sigma_px") nd(o.ba_sigma_px);
@@ -1266,6 +1336,7 @@ static bool parse(int argc, char** argv, Opt& o) {
     else if (a == "--dump_pcd") ni(o.dump_pcd);
     else if (a == "--loop_cluster_dist") nd(o.loop_cluster_dist);
     else if (a == "--loop_cluster_max") ni(o.loop_cluster_max);
+    else if (a == "--loop_cycle_max") nd(o.loop_cycle_max);
     else if (a == "--write_back") ni(o.write_back);
     else if (a == "--write_back_dir") ns(o.write_back_dir);
     else if (a == "--joint") o.joint = true;
@@ -1517,6 +1588,36 @@ private:
 };
 static FrameCache g_fcache;
 
+/// @brief loadFrame 和 loadFrameRaw 共用的过滤逻辑: 去远近点 + z 下限 + (可选)剔动态。
+///        两边**必须**用同一份代码 —— 之前 min_z 就只改了 loadFrame 一处, loadFrameRaw
+///        悄悄漏下了, 导致配准和导出用的过滤条件不一致而没有任何提示。
+/// @param raw    刚从磁盘读出来的原始点(未过滤)
+/// @param out    过滤后的结果(**不做体素滤波**, 体素是调用方按需自己做的事)
+/// @param n_dyn  不为空时输出被剔掉的动态点数
+static void filterFrameRaw(const std::string& path, const Opt& o, const ialign::PcdCloud& raw,
+                          ialign::PcdCloud& out, long* n_dyn) {
+  const bool has_i = raw.intensities.size() == raw.points.size();
+  const double r2max = o.max_range > 0 ? o.max_range * o.max_range : 0.0;
+  const double r2min = o.min_range > 0 ? o.min_range * o.min_range : 0.0;
+  out.points.clear();
+  out.intensities.clear();
+  for (std::size_t i = 0; i < raw.points.size(); i++) {
+    const double r2 = raw.points[i].head<3>().squaredNorm();
+    if (r2min > 0 && r2 < r2min) continue;
+    if (r2max > 0 && r2 > r2max) continue;
+    // z 下限: 雷达局部系下的原始高度, 低于这个物理上不该有有效回波 (路面多径/噪点)
+    if (raw.points[i].z() < o.min_z) continue;
+    out.points.push_back(raw.points[i]);
+    if (has_i) out.intensities.push_back(raw.intensities[i]);
+  }
+  // 动态点必须在**体素滤波之前**剔 —— 滤波会把车上的点和背景点平均进同一格,
+  // 之后再删只会留下被污染的格心。loadFrameRaw 本来就不做体素, 这个顺序对它同样适用。
+  if (o.dyn_filter) {
+    const long n = ialign::removeDynPoints(path, o.dyn_ts_tol, out.points, out.intensities);
+    if (n_dyn) *n_dyn = n;
+  }
+}
+
 static bool loadFrame(const std::string& path, const Opt& o, ialign::PcdCloud& out, long* n_dyn = nullptr) {
   {
     long nd = 0;
@@ -1531,24 +1632,7 @@ static bool loadFrame(const std::string& path, const Opt& o, ialign::PcdCloud& o
     return false;
   }
   g_io.bump(true);
-  const bool has_i = raw.intensities.size() == raw.points.size();
-  const double r2max = o.max_range > 0 ? o.max_range * o.max_range : 0.0;
-  const double r2min = o.min_range > 0 ? o.min_range * o.min_range : 0.0;
-  out.points.clear();
-  out.intensities.clear();
-  for (std::size_t i = 0; i < raw.points.size(); i++) {
-    const double r2 = raw.points[i].head<3>().squaredNorm();
-    if (r2min > 0 && r2 < r2min) continue;
-    if (r2max > 0 && r2 > r2max) continue;
-    out.points.push_back(raw.points[i]);
-    if (has_i) out.intensities.push_back(raw.intensities[i]);
-  }
-  // 动态点必须在**体素滤波之前**剔 —— 滤波会把车上的点和背景点平均进同一格,
-  // 之后再删只会留下被污染的格心。
-  if (o.dyn_filter) {
-    const long n = ialign::removeDynPoints(path, o.dyn_ts_tol, out.points, out.intensities);
-    if (n_dyn) *n_dyn = n;
-  }
+  filterFrameRaw(path, o, raw, out, n_dyn);
   voxelDownsample(out.points, out.intensities, o.frame_voxel);
   g_fcache.put(path, out, n_dyn ? *n_dyn : 0);
   return !out.points.empty();
@@ -1558,12 +1642,13 @@ static bool loadFrame(const std::string& path, const Opt& o, ialign::PcdCloud& o
 /// @param nt 线程数; 在**已经并行到帧**的地方一律传 1, 否则会嵌套并行把线程数翻倍
 /// @note k=10 近邻。glim 的 CloudCovarianceEstimation 内部做了正则化(把最小特征值抬起来),
 ///       所以平面上的点得到的是"扁"协方差 —— GICP 的 plane-to-plane 行为就来自这里。
-/// @brief 读一帧但**不做体素滤波**: 只去车身/远点 + (可选)剔动态。
+/// @brief 读一帧但**不做体素滤波**: 只去车身/远点/低于 min_z 的点 + (可选)剔动态。
 ///
-/// 为什么要单独一个: loadFrame 末尾的 voxelDownsample 会把格内的点换成**格心均值**,
-/// 强度也一起平均 —— 于是导出的点云既不是原始测量位置, 强度也被抹平了。
-/// 判路面漆重影时这两件事都致命: 漆边缘的格子混了漆和沥青, 平均后强度被拉低,
+/// 为什么要单独一个而不是直接用 loadFrame: loadFrame 末尾的 voxelDownsample 会把格内的
+/// 点换成**格心均值**, 强度也一起平均 —— 于是导出的点云既不是原始测量位置, 强度也被
+/// 抹平了。判路面漆重影时这两件事都致命: 漆边缘的格子混了漆和沥青, 平均后强度被拉低,
 /// 边界被抹圆; 点的分布也从"扫描线"变成"规则格点", 看不出真实采样结构。
+/// 过滤条件(range/z/动态)与 loadFrame **完全一致**(见 filterFrameRaw), 只是不做体素。
 static bool loadFrameRaw(const std::string& path, const Opt& o, ialign::PcdCloud& out) {
   ialign::PcdCloud raw;
   if (!ialign::loadPcd(path, raw, true)) {
@@ -1571,19 +1656,7 @@ static bool loadFrameRaw(const std::string& path, const Opt& o, ialign::PcdCloud
     return false;
   }
   g_io.bump(true);
-  const bool has_i = raw.intensities.size() == raw.points.size();
-  const double r2max = o.max_range > 0 ? o.max_range * o.max_range : 0.0;
-  const double r2min = o.min_range > 0 ? o.min_range * o.min_range : 0.0;
-  out.points.clear();
-  out.intensities.clear();
-  for (std::size_t i = 0; i < raw.points.size(); i++) {
-    const double r2 = raw.points[i].head<3>().squaredNorm();
-    if (r2min > 0 && r2 < r2min) continue;
-    if (r2max > 0 && r2 > r2max) continue;
-    out.points.push_back(raw.points[i]);
-    if (has_i) out.intensities.push_back(raw.intensities[i]);
-  }
-  if (o.dyn_filter) ialign::removeDynPoints(path, o.dyn_ts_tol, out.points, out.intensities);
+  filterFrameRaw(path, o, raw, out, nullptr);
   return !out.points.empty();
 }
 
@@ -2420,6 +2493,7 @@ static bool localBA(const std::vector<std::string>& paths, std::vector<Eigen::Is
   co.sigma_rel_r = o.ba_rel_r;
   co.attitude_w = o.ba_att_w;
   co.huber = o.ba_huber;
+  co.cauchy = o.ba_cauchy;
   co.iters = o.ba_iters;
   co.report = false;
   std::vector<Eigen::Isometry3d> Tout;
@@ -2526,6 +2600,7 @@ static std::vector<std::pair<int, Eigen::Isometry3d>> loopSubmapPoses(
   co.sigma_rel_r = o.ba_rel_r;
   co.attitude_w = o.ba_att_w;
   co.huber = o.ba_huber;
+  co.cauchy = o.ba_cauchy;
   co.iters = o.ba_iters;
   co.report = false;                // 每个回环端点解一次, 打日志会淹掉一切
   std::vector<Eigen::Isometry3d> Tw;
@@ -2543,6 +2618,87 @@ static std::vector<std::pair<int, Eigen::Isometry3d>> loopSubmapPoses(
   // 锚是中心帧, 所以 Tw[ci] 应当就是 T0[ci]; 仍显式取相对, 免得依赖这一点
   for (int k = 0; k < m; k++) out.emplace_back(mem[k], Tw[ci].inverse() * Tw[k]);
   return out;
+}
+
+// -----------------------------------------------------------------------------
+// 去地面后重新配准一次, 跟原结果比旋转角度差多少 (--loop_drot_max / --cross_drot_max 用)。
+//
+// 由来: 实测发现"配准后 above-ground nn 中位数/p90 都正常, 但目视明显错位"的边,
+// 把地面点去掉(地面是水平大平面, 对旋转/竖直方向的约束很弱, 却因为点数占大多数,
+// 能在总残差里把局部结构没对齐这件事"平"掉)、只用竖直结构重配一次, 解出来的旋转
+// 跟原结果差得多。抽了 20 个已知好/坏的回环边验证过: 好案例 drot 0.02~0.11 度,
+// 坏案例 0.18~1.09 度, 干净地分成两段, 没有重叠 —— 比"去地面前后平移差多少"更
+// 稳定(平移差在坏案例里有几条压得跟好案例一样低)。
+//
+// pi 是 target 在**它自己的局部系**下的点(gm 就是拿它建的, 直接用); pj 是 source
+// 在**它自己的局部系**下的点, 用 T1(target<-source)转到 target 系里才能拿 gm 判
+// 是否在地面以上——但喂给重新配准的还是 pj 原始的(未转换)点, 变量位姿从 T1 起找。
+// 只在两侧地面以上点都还有 >=200 个时才做, 否则算不出有意义的旋转差。
+static bool groundRemovalDrot(const std::vector<Eigen::Vector4d>& pi,
+                              const std::vector<Eigen::Vector4d>& pj, const Eigen::Isometry3d& T1,
+                              const ialign::GroundMap& gm, double z_above, double ba_pair_voxel,
+                              int ba_pair_iters, double fine_corr, int fine_iters,
+                              const ialign::CloudCovarianceEstimation& ce,
+                              Eigen::Isometry3d* T_ng_out, double* drot_deg_out) {
+  const auto above = [&](const Eigen::Vector4d& p) {
+    const double zg = gm.at(p.x(), p.y());
+    return zg > -1e17 && p.z() - zg >= z_above;
+  };
+  std::vector<Eigen::Vector4d> pi_ng, pj_ng;
+  pi_ng.reserve(pi.size());
+  pj_ng.reserve(pj.size());
+  for (const auto& p : pi)
+    if (above(p)) pi_ng.push_back(p);
+  for (const auto& p : pj)
+    if (above(T1 * p)) pj_ng.push_back(p);
+  if (pi_ng.size() < 200 || pj_ng.size() < 200) return false;
+
+  auto ci2 = std::make_shared<gtsam_points::PointCloudCPU>();
+  auto cj2 = std::make_shared<gtsam_points::PointCloudCPU>();
+  ci2->add_points(pi_ng);
+  cj2->add_points(pj_ng);
+  addCovs(ci2, ce, 1);
+  addCovs(cj2, ce, 1);
+  auto vm2 = std::make_shared<gtsam_points::GaussianVoxelMapCPU>(ba_pair_voxel);
+  vm2->insert(*ci2);
+
+  gtsam::Values vals;
+  vals.insert(0, gtsam::Pose3(T1.matrix()));   // 用原配准结果当初值, 期望离它不远
+  gtsam::NonlinearFactorGraph g;
+  auto f = gtsam::make_shared<gtsam_points::IntegratedVGICPFactor>(gtsam::Pose3(), 0, vm2, cj2);
+  g.add(f);
+  Eigen::Isometry3d T_ng = T1;
+  try {
+    gtsam_points::LevenbergMarquardtExtParams lm;
+    lm.setMaxIterations(ba_pair_iters);
+    vals = gtsam_points::LevenbergMarquardtOptimizerExt(g, vals, lm).optimize();
+    T_ng = Eigen::Isometry3d(vals.at<gtsam::Pose3>(0).matrix());
+  } catch (const std::exception&) {
+    return false;
+  }
+  if (f->inlier_fraction() >= 0.2) {
+    gtsam_points::KdTree tr2(ci2->points, ci2->size());
+    gtsam::Values v2;
+    v2.insert(0, gtsam::Pose3(T_ng.matrix()));
+    gtsam::NonlinearFactorGraph g2;
+    auto ff = gtsam::make_shared<gtsam_points::IntegratedGICPFactor>(
+      gtsam::Pose3(), 0, ci2, cj2,
+      std::shared_ptr<gtsam_points::NearestNeighborSearch>(
+        &tr2, [](gtsam_points::NearestNeighborSearch*) {}));
+    ff->set_max_correspondence_distance(fine_corr);
+    g2.add(ff);
+    try {
+      gtsam_points::LevenbergMarquardtExtParams lm2;
+      lm2.setMaxIterations(fine_iters);
+      v2 = gtsam_points::LevenbergMarquardtOptimizerExt(g2, v2, lm2).optimize();
+      T_ng = Eigen::Isometry3d(v2.at<gtsam::Pose3>(0).matrix());
+    } catch (const std::exception&) {
+    }
+  }
+  *T_ng_out = T_ng;
+  *drot_deg_out =
+    Eigen::AngleAxisd(T1.linear().transpose() * T_ng.linear()).angle() * 180.0 / M_PI;
+  return true;
 }
 
 static IntraCon buildLoop(const ialign::SessionData& S, const std::vector<int>& idx, int gofs,
@@ -2671,8 +2827,11 @@ static IntraCon buildLoop(const ialign::SessionData& S, const std::vector<int>& 
   // 配准后 above-ground nn 的 p90 (--loop_nn_p90_max 用); 中位数(下面 why=5 那道门)对
   // 最多 50% 的离群点免疫, 测不出"一大片平面结构切向滑动 + 局部真错位"这种组合。
   std::vector<double> nn1p90(cand.size(), -1);
-  std::vector<char> why(cand.size(), 0);   // 1=重叠不足 2=inlier低 3=修正过大 4=异常 6=nn p90超限
+  std::vector<char> why(cand.size(), 0);   // 1=重叠不足 2=inlier低 3=修正过大 4=异常 6=nn p90超限 7=去地面drot超限
   std::vector<char> is_anti(cand.size(), 0);
+  // 去地面重配准结果(--ground_drot_max / 落盘可视化用): drot<0 = 没算(点太少或没必要算)
+  std::vector<double> ngDrot(cand.size(), -1);
+  std::vector<Eigen::Isometry3d> ngT(cand.size(), Eigen::Isometry3d::Identity());
   Progress prog_lp(tag, "回环配准", cand.size());
 #pragma omp parallel for num_threads(o.num_threads) schedule(dynamic)
   for (std::int64_t c = 0; c < static_cast<std::int64_t>(cand.size()); c++) {
@@ -2767,11 +2926,13 @@ static IntraCon buildLoop(const ialign::SessionData& S, const std::vector<int>& 
     // ---- 地面以上 nn: 配准前/后 ----
     // inlier_fraction 量的是**覆盖**不是精度(这个项目里已经因此判断错过一次),
     // 所以采纳判据里必须有一个真正量对齐的数。
+    // gm 声明在这个块外面: 下面的 accept 判据(--ground_drot_max)和落盘都要用它。
+    ialign::GroundMap gm;
     {
       Eigen::Vector2d mn(1e18, 1e18), mx(-1e18, -1e18);
       for (const auto& p : pi) { mn = mn.cwiseMin(p.head<2>()); mx = mx.cwiseMax(p.head<2>()); }
-      const auto gm = ialign::buildGroundMap({{ci.get(), Eigen::Isometry3d::Identity()}}, mn.x(),
-                                            mn.y(), mx.x(), mx.y(), 8.0);
+      gm = ialign::buildGroundMap({{ci.get(), Eigen::Isometry3d::Identity()}}, mn.x(),
+                                 mn.y(), mx.x(), mx.y(), 8.0);
       const auto occ = buildOcc(pi, 2.0);
       gtsam_points::KdTree tr(ci->points, ci->size());
       nn0[c] = aboveGroundNN(*ci, gm, tr, *cj, T0, o.z_above, 3000, 3.0, &occ, 2.0);
@@ -2814,7 +2975,21 @@ static IntraCon buildLoop(const ialign::SessionData& S, const std::vector<int>& 
     // p90 门: 中位数正常但 p90 超限 = 大概率"大片平面结构切向滑动 + 局部真错位"
     // (与 buildCross 的 --cross_nn_p90_max 同一个道理); 默认关闭(<=0)。
     else if (o.loop_nn_p90_max > 0 && nn1p90[c] > o.loop_nn_p90_max) { why[c] = 6; }
-    else { rr[c] = T1; ok[c] = 1; }
+    else {
+      // 去地面重配准: 只在前面几道便宜的门都过了之后才做(它要重新配准一次, 比前面
+      // 任何一道检查都贵)。--ground_drot_max 关着时也算, 只是不落地当判据用——
+      // 落盘(--dump_loop)要把这张图画出来, 不能因为门关着就没有数可画。
+      if (o.ground_drot_max > 0 || o.dump_loop > 0) {
+        groundRemovalDrot(pi, pj, T1, gm, o.z_above, o.ba_pair_voxel, o.ba_pair_iters, o.fine_corr,
+                          o.fine_iters, ce, &ngT[c], &ngDrot[c]);
+      }
+      if (o.ground_drot_max > 0 && ngDrot[c] >= 0 && ngDrot[c] > o.ground_drot_max) {
+        why[c] = 7;
+      } else {
+        rr[c] = T1;
+        ok[c] = 1;
+      }
+    }
 
     // ---- debug 落盘 ----
     // 注意 --dump_cross 只管跨 session 的 scan2submap, 回环走的是这一路。
@@ -2822,8 +2997,11 @@ static IntraCon buildLoop(const ialign::SessionData& S, const std::vector<int>& 
       const int seq = nldump++;
       if (seq < o.dump_loop) {
         char base[224];
+        // 文件名最前面是**生成序号**(seq, 每落盘一个就 +1), 不是质量分 —— 所以这批文件
+        // 不会天然按质量排序(那是 cross/ 和 frames/ 下 dump 的做法), 但能立刻看出
+        // "这是第几个生成的"、以及生成顺序和候选顺序(沿弧长遍历)是否一致。
         std::snprintf(base, sizeof(base),
-                      "l%04d_%s_nn%03d_p%03d_g%+04d_%s_i%05d_j%05d_inl%02d_corr%03d", seq,
+                      "%05d_l_%s_nn%03d_p%03d_g%+04d_%s_i%05d_j%05d_inl%02d_corr%03d", seq,
                       dd < 30.0 ? "same" : (dd >= 150.0 ? "anti" : "cross"),
                       static_cast<int>(std::lround(std::max(0.0, nn1[c]) * 100)),
                       static_cast<int>(std::lround(std::max(0.0, nn1p90[c]) * 100)),
@@ -2855,13 +3033,29 @@ static IntraCon buildLoop(const ialign::SessionData& S, const std::vector<int>& 
         ip.res = 0.08;
         ip.tol = 0.15;
         ip.z_above = o.z_above;
-        ialign::renderTopDownPair(*ci, *cj, T0, T1, ip, la, lb, lm3,
-                                  (ldir / (std::string(base) + ".png")).string());
+        
+        // ialign::renderTopDownPair(*ci, *cj, T0, T1, ip, la, lb, lm3,
+        //                           (ldir / (std::string(base) + ".png")).string());
+
+        // 去地面重配准的可视化: 上=原结果(T1) 下=去地面后重新配准的结果(ngT[c]),
+        // 用**同一份完整点云**画(不是只画去地面剩下的点), 这样竖直结构对没对齐
+        // 一眼能看出来, 也能直接跟上面那张主图比。ngDrot[c]<0 = 没算(点太少/没必要)。
+        if (ngDrot[c] >= 0) {
+          char lm4[288];
+          std::snprintf(lm4, sizeof(lm4),
+                        "GROUND-REMOVAL RECHECK: drot=%.3F DEG (>%s%.2F = 判有问题)%s | "
+                        "TOP=ORIGINAL RESULT  BOTTOM=REFIT W/O GROUND",
+                        ngDrot[c], o.ground_drot_max > 0 ? "" : " 未启用, 阈值=",
+                        o.ground_drot_max > 0 ? o.ground_drot_max : 0.0,
+                        why[c] == 7 ? " ** 本条已因此被剔 **" : "");
+          ialign::renderTopDownPair(*ci, *cj, T1, ngT[c], ip, la, lb, lm4,
+                                    (ldir / (std::string(base) + "_ground.png")).string());
+        }
       }
     }
   }
   std::vector<double> inls, corrs, nnv, ghv;
-  std::size_t d1 = 0, d2 = 0, d3 = 0, d4 = 0, d5 = 0, d6 = 0;
+  std::size_t d1 = 0, d2 = 0, d3 = 0, d4 = 0, d5 = 0, d6 = 0, d7g = 0;
   // 收集被采纳的候选用于聚类过滤: 同一地点（距离阈值内）只保留若干条
   struct AccItem { int li, lj; Eigen::Isometry3d T; double inl, corr, nn; bool anti; };
   std::vector<AccItem> accs;
@@ -2881,6 +3075,7 @@ static IntraCon buildLoop(const ialign::SessionData& S, const std::vector<int>& 
       case 3: d3++; break;
       case 5: d5++; break;
       case 6: d6++; break;
+      case 7: d7g++; break;
       default: d4++; break;
     }
   }
@@ -2930,13 +3125,84 @@ static IntraCon buildLoop(const ialign::SessionData& S, const std::vector<int>& 
     clusters[found].push_back((int)k);
   }
   // 从每簇中按 inlier 排序, 取前 max_per 个加入 out.rel
+  //
+  // 环路一致性检查(--loop_cycle_max): 同一簇(同一地点重访)里如果有 >=2 条候选,
+  // 它们测的应该是同一个相对位姿。对簇内每一对候选 (a, b), 用 a 的测量 + **两条
+  // 候选各自端点之间的短程 INS 相对位姿**(几米内, 局部可信, 3.5cm 可重复性就是
+  // 这么来的)预测 b 该测到什么, 跟 b 自己配准出来的比——差得多说明这一对彼此不一致。
+  // 这和 nn/inlier/p90 不同: 那些都是"这次配准自己的统计量", 这个是拿旁边一次
+  // **独立**测量互相验证, 能抓住"统计量看着都正常但和旁边对不上"的情况。
+  // 判定不按"信 inlier 最高的那条", 也不是"随便找到一个同伴就保留"(那个判据太弱:
+  // 簇里如果分成两派、每派内部互相一致但两派互相不一致, "有没有同伴"会让两派全部
+  // 通过, 检测不出矛盾)。改用**连通分量**: 把"互相一致"当边, 在簇内候选上连图,
+  // 只留**最大的连通分量**(多数派), 分量外的全部剔除。若最大分量不唯一(比如
+  // 真的两派势均力敌), 分不出谁是多数, 整簇都不要——不赌任何一派。单条候选的簇
+  // 没有第二个独立来源可比, 查不出来, 原样放行。
+  std::size_t d7 = 0;
+  std::vector<double> cyc_errs;   // 仅用于打印分布, 供未设阈值时参考选值
   for (const auto &cl : clusters) {
-    std::vector<int> idxs = cl;
-    std::sort(idxs.begin(), idxs.end(), [&](int a, int b){ return accs[a].inl > accs[b].inl; });
-    for (int t = 0; t < std::min((int)idxs.size(), max_per); ++t) {
-      const AccItem &it = accs[idxs[t]];
+    const std::size_t m = cl.size();
+    if (m < 2) {
+      const AccItem &it = accs[cl[0]];
       out.rel.emplace_back(gofs + it.li, gofs + it.lj, it.T);
       out.kind.push_back(it.anti ? 3 : 2);   // 2=同向回环 3=反向回环
+      continue;
+    }
+    std::vector<std::vector<double>> err(m, std::vector<double>(m, 0.0));
+    for (std::size_t a = 0; a < m; ++a) {
+      const AccItem& A = accs[cl[a]];
+      for (std::size_t b = 0; b < m; ++b) {
+        if (a == b) continue;
+        const AccItem& B = accs[cl[b]];
+        const Eigen::Isometry3d T_ii =
+          S.frames[idx[A.li]].T_w_l.inverse() * S.frames[idx[B.li]].T_w_l;
+        const Eigen::Isometry3d T_jj =
+          S.frames[idx[A.lj]].T_w_l.inverse() * S.frames[idx[B.lj]].T_w_l;
+        // 把 A 的测量值(A.T: A.li -> A.lj)搬到 B 的端点上, 跟 B.T 比较
+        const Eigen::Isometry3d T_pred = T_ii.inverse() * A.T * T_jj;
+        err[a][b] = (T_pred.inverse() * B.T).translation().norm();
+        if (a < b) cyc_errs.push_back(err[a][b]);   // 每对只记一次, 供打印分布
+      }
+    }
+    std::vector<bool> keep(m, true);
+    if (o.loop_cycle_max > 0) {
+      // 并查集: "互相一致"连边, 求连通分量, 只留最大的那个(多数派)
+      std::vector<std::size_t> parent(m);
+      for (std::size_t k = 0; k < m; ++k) parent[k] = k;
+      std::function<std::size_t(std::size_t)> find = [&](std::size_t x) -> std::size_t {
+        while (parent[x] != x) { parent[x] = parent[parent[x]]; x = parent[x]; }
+        return x;
+      };
+      for (std::size_t a = 0; a < m; ++a) {
+        for (std::size_t b = a + 1; b < m; ++b) {
+          if (std::max(err[a][b], err[b][a]) <= o.loop_cycle_max) {
+            const std::size_t ra = find(a), rb = find(b);
+            if (ra != rb) parent[ra] = rb;
+          }
+        }
+      }
+      std::map<std::size_t, int> comp_size;
+      for (std::size_t k = 0; k < m; ++k) comp_size[find(k)]++;
+      int best_size = 0;
+      for (const auto& [root, sz] : comp_size) best_size = std::max(best_size, sz);
+      std::size_t n_best = 0;
+      for (const auto& [root, sz] : comp_size) n_best += (sz == best_size);
+      // 最大分量唯一才认它是多数派; 并列(比如两派势均力敌)分不出谁对, 整簇都不要
+      for (std::size_t k = 0; k < m; ++k)
+        keep[k] = (n_best == 1) && (comp_size[find(k)] == best_size);
+    }
+    std::vector<std::size_t> idxs(m);
+    for (std::size_t k = 0; k < m; ++k) idxs[k] = k;
+    std::sort(idxs.begin(), idxs.end(),
+              [&](std::size_t a, std::size_t b) { return accs[cl[a]].inl > accs[cl[b]].inl; });
+    int kept = 0;
+    for (std::size_t k = 0; k < m && kept < max_per; ++k) {
+      const std::size_t a = idxs[k];
+      if (!keep[a]) { d7++; continue; }
+      const AccItem &it = accs[cl[a]];
+      out.rel.emplace_back(gofs + it.li, gofs + it.lj, it.T);
+      out.kind.push_back(it.anti ? 3 : 2);   // 2=同向回环 3=反向回环
+      kept++;
     }
   }
   out.n_cand = cand.size();
@@ -2952,14 +3218,20 @@ static IntraCon buildLoop(const ialign::SessionData& S, const std::vector<int>& 
   };
   printf("  [%s] 回环: 候选=%zu  模式=%s\n"
          "        采纳=%zu (聚类前 %zu)  剔除: 重叠不足=%zu inlier<%.2f(反向%.2f)=%zu"
-         " 修正>%.1fm=%zu nn变差=%zu nn_p90超限=%zu 异常=%zu\n"
+         " 修正>%.1fm=%zu nn变差=%zu nn_p90超限=%zu 去地面drot超限=%zu 环路不一致=%zu 异常=%zu\n"
          "        inlier 中位=%.3f  修正量 中位=%.3f p90=%.3f m  配准后 nn 中位=%.3f m\n",
          tag, cand.size(),
          o.loop_submap > 0
            ? ("submap2submap (每端 +-" + std::to_string(o.loop_submap) + " 帧)").c_str()
            : "scan2scan (单帧)",
          out.rel.size(), accs.size(), d1, o.loop_min_inlier, o.loop_min_inlier_rev, d2,
-         o.ba_max_corr, d3, d5, d6, d4, med(inls), med(corrs), p90(corrs), med(nnv));
+         o.ba_max_corr, d3, d5, d6, d7g, d7, d4, med(inls), med(corrs), p90(corrs), med(nnv));
+  if (!cyc_errs.empty())
+    printf("        簇内环路一致性残差(仅簇内 >=2 条候选处能算, 共 %zu 对): 中位=%.3f p90=%.3f"
+           " max=%.3f m%s\n",
+           cyc_errs.size(), med(cyc_errs), p90(cyc_errs),
+           *std::max_element(cyc_errs.begin(), cyc_errs.end()),
+           o.loop_cycle_max > 0 ? "" : "  (--loop_cycle_max 未开, 仅供参考选值)");
   if (!ghv.empty())
     printf("        **目标端 submap 自身重影 中位=%.3f m** <- 这条约束的精度上限;"
            " 上面的 nn 若明显小于它, 是往模糊里塞出来的\n", med(ghv));
@@ -3318,6 +3590,7 @@ struct CrossCon {
   std::vector<double> nn0, nn1;
   int n_region = 0, n_try = 0, n_colocated = 0;
   int n_rej_p90 = 0;   // 因 --cross_nn_p90_max 门被剔的候选数 (0 = 门关着或没剔到)
+  int n_rej_ground_drot = 0;   // 因 --ground_drot_max 门被剔的候选数 (0 = 门关着或没剔到)
 };
 
 /// @brief 当前 session 的帧逐一配到"前面所有 session 拼出的 submap"上, 产出跨 session 约束。
@@ -3566,6 +3839,28 @@ static CrossCon buildCross(const std::vector<RefFrame>& ref, const ialign::Sessi
     out.n_region++;
     const int rid = out.n_region;
 
+    // ---- 去地面重配准(--ground_drot_max)用的 target: 按区域只建一次, 后面每个候选
+    // 复用(不是每条候选各建一次) —— 跟 tgt/vmm/tree 是同一个"target 按区域摊销"的思路。
+    gtsam_points::PointCloudCPU::Ptr tgt_ng;
+    gtsam_points::GaussianVoxelMapCPU::Ptr vmm_ng;
+    std::shared_ptr<gtsam_points::KdTree> tree_ng;
+    if (o.ground_drot_max > 0 || o.dump_cross > 0) {
+      std::vector<Eigen::Vector4d> sm_ng;
+      sm_ng.reserve(sm.size());
+      for (const auto& p : sm) {
+        const double zg = gm.at(p.x(), p.y());
+        if (zg > -1e17 && p.z() - zg >= o.z_above) sm_ng.push_back(p);
+      }
+      if (sm_ng.size() >= 200) {
+        tgt_ng = std::make_shared<gtsam_points::PointCloudCPU>();
+        tgt_ng->add_points(sm_ng);
+        addCovs(tgt_ng, ce, o.num_threads);
+        vmm_ng = std::make_shared<gtsam_points::GaussianVoxelMapCPU>(o.ba_pair_voxel);
+        vmm_ng->insert(*tgt_ng);
+        tree_ng = std::make_shared<gtsam_points::KdTree>(tgt_ng->points, tgt_ng->size());
+      }
+    }
+
     // ---- debug: 存这个区域的 target, 并量它自身有多糊 ----
     // 必须一起看: 配准精度的上限就是 target 自身的清晰度。target 糊到 0.1,
     // 就别指望把帧对到 0.03 —— 那种"更小的 nn"是往模糊里塞出来的。
@@ -3664,6 +3959,10 @@ static CrossCon buildCross(const std::vector<RefFrame>& ref, const ialign::Sessi
     // 局部真错位这种组合会被它完全放过, p90 才会被那部分离群点顶起来。
     std::vector<double> n1p90(rb.size(), -1);
     std::atomic<int> n_rej_p90_region{0};
+    // 去地面重配准结果(--ground_drot_max / 落盘可视化用): drot<0 = 没算
+    std::vector<double> ngDrot(rb.size(), -1);
+    std::vector<Eigen::Isometry3d> ngT(rb.size(), Eigen::Isometry3d::Identity());
+    std::atomic<int> n_rej_ground_drot_region{0};
     Progress prog_x(cur.name.c_str(), "跨session 配准 (本区域)", rb.size());
 #pragma omp parallel for num_threads(o.num_threads) schedule(dynamic)
     for (std::int64_t q = 0; q < static_cast<std::int64_t>(rb.size()); q++) {
@@ -3736,8 +4035,58 @@ static CrossCon buildCross(const std::vector<RefFrame>& ref, const ialign::Sessi
       // 那部分离群点中位数测不出来, p90 会被顶起来。默认关闭(<=0), 需要显式校准阈值。
       const bool p90_bad = o.cross_nn_p90_max > 0 && n1p90[q] > o.cross_nn_p90_max;
       if (p90_bad) n_rej_p90_region.fetch_add(1, std::memory_order_relaxed);
-      const bool acc = inl >= o.min_inlier && corr <= o.max_corr &&
-                       !(n0[q] > 0 && n1[q] > 0 && n1[q] > n0[q]) && !p90_bad;
+      const bool acc_pre = inl >= o.min_inlier && corr <= o.max_corr &&
+                           !(n0[q] > 0 && n1[q] > 0 && n1[q] > n0[q]) && !p90_bad;
+      // 去地面重配准: 只在其它便宜的门都过了之后才做(它要重新配准一次, 比前面任何
+      // 一道检查都贵), target 端复用这个区域已经建好的 tgt_ng/vmm_ng/tree_ng。
+      // --ground_drot_max 关着时, dump_cross 开着也算, 落盘图要用得上。
+      if (acc_pre && tgt_ng && (o.ground_drot_max > 0 || o.dump_cross > 0)) {
+        std::vector<Eigen::Vector4d> sp_ng;
+        sp_ng.reserve(sp.size());
+        for (const auto& p : sp) {
+          const Eigen::Vector4d w = Ta * p;
+          const double zg = gm.at(w.x(), w.y());
+          if (zg > -1e17 && w.z() - zg >= o.z_above) sp_ng.push_back(p);
+        }
+        if (sp_ng.size() >= 200) {
+          auto src_ng = std::make_shared<gtsam_points::PointCloudCPU>();
+          src_ng->add_points(sp_ng);
+          addCovs(src_ng, ce, 1);
+          gtsam::Values vals_ng;
+          vals_ng.insert(0, gtsam::Pose3(Ta.matrix()));
+          gtsam::NonlinearFactorGraph g_ng;
+          auto f_ng =
+            gtsam::make_shared<gtsam_points::IntegratedVGICPFactor>(gtsam::Pose3(), 0, vmm_ng, src_ng);
+          g_ng.add(f_ng);
+          try {
+            gtsam_points::LevenbergMarquardtExtParams lm_ng;
+            lm_ng.setMaxIterations(o.iters);
+            vals_ng = gtsam_points::LevenbergMarquardtOptimizerExt(g_ng, vals_ng, lm_ng).optimize();
+            ngT[q] = Eigen::Isometry3d(vals_ng.at<gtsam::Pose3>(0).matrix());
+            if (f_ng->inlier_fraction() >= 0.2) {
+              gtsam::Values v2_ng;
+              v2_ng.insert(0, gtsam::Pose3(ngT[q].matrix()));
+              gtsam::NonlinearFactorGraph g2_ng;
+              auto ff_ng = gtsam::make_shared<gtsam_points::IntegratedGICPFactor>(
+                gtsam::Pose3(), 0, tgt_ng, src_ng,
+                std::shared_ptr<gtsam_points::NearestNeighborSearch>(
+                  tree_ng.get(), [](gtsam_points::NearestNeighborSearch*) {}));
+              ff_ng->set_max_correspondence_distance(o.fine_corr);
+              g2_ng.add(ff_ng);
+              gtsam_points::LevenbergMarquardtExtParams lm2_ng;
+              lm2_ng.setMaxIterations(o.fine_iters);
+              v2_ng = gtsam_points::LevenbergMarquardtOptimizerExt(g2_ng, v2_ng, lm2_ng).optimize();
+              ngT[q] = Eigen::Isometry3d(v2_ng.at<gtsam::Pose3>(0).matrix());
+            }
+            ngDrot[q] =
+              Eigen::AngleAxisd(Ta.linear().transpose() * ngT[q].linear()).angle() * 180.0 / M_PI;
+          } catch (const std::exception&) {
+          }
+        }
+      }
+      const bool ground_bad = o.ground_drot_max > 0 && ngDrot[q] >= 0 && ngDrot[q] > o.ground_drot_max;
+      if (ground_bad) n_rej_ground_drot_region.fetch_add(1, std::memory_order_relaxed);
+      const bool acc = acc_pre && !ground_bad;
       if (acc) {
         res[q] = Ta;
         ok[q] = 1;
@@ -3748,6 +4097,10 @@ static CrossCon buildCross(const std::vector<RefFrame>& ref, const ialign::Sessi
         const int seq = ndump++;
         if (seq < o.dump_cross) {
           char base[224];
+          // 注意: 这里**不**把 seq(生成序号) 放进文件名 —— --dump_cross 的约定是
+          // "分数放最前, ls 天然按质量排序, ls -r 从最差看起"(见 --help), 加个生成序号
+          // 到最前面会把这个排序方式覆盖掉。要看生成顺序的话, --dump_loop 那份(l<序>_...)
+          // 已经是按生成序号命名的, 这里维持原来的"质量优先"不变。
           std::snprintf(base, sizeof(base), "r%02d_nn%03d_p%03d_g%+04d_%s_f%05d_inl%02d_corr%03d",
                         rid, static_cast<int>(std::lround(std::max(0.0, n1[q]) * 100)),
                         static_cast<int>(std::lround(std::max(0.0, n1p90[q]) * 100)),
@@ -3762,7 +4115,7 @@ static CrossCon buildCross(const std::vector<RefFrame>& ref, const ialign::Sessi
             va.push_back(Ta * src->points[u]);
           }
           if (o.dump_pcd) {
-            // savePts(cdir / (std::string(base) + "_before.pcd"), vb);
+            savePts(cdir / (std::string(base) + "_before.pcd"), vb);
             savePts(cdir / (std::string(base) + "_after.pcd"), va);
           }
           char la[128], lb[128], lm3[288];
@@ -3770,19 +4123,34 @@ static CrossCon buildCross(const std::vector<RefFrame>& ref, const ialign::Sessi
                         rid, tgt->size(), ra.size(), std::max(0.0, tgt_ghost));
           std::snprintf(lb, sizeof(lb), "%s FRAME %d", cur.name.c_str(), j);
           std::snprintf(lm3, sizeof(lm3),
-                        "%s%s INLIER=%.2f CORR=%.2FM | ABOVE-GROUND NN %.3F->%.3F M (P90 %.3F, TGT SELF %.3F)",
-                        acc ? "ACCEPTED" : "REJECTED", p90_bad ? " (P90 门)" : "", std::max(0.0, inl),
-                        corr, n0[q], n1[q], n1p90[q], std::max(0.0, tgt_ghost));
+                        "%s%s%s INLIER=%.2f CORR=%.2FM | ABOVE-GROUND NN %.3F->%.3F M (P90 %.3F, TGT SELF %.3F)",
+                        acc ? "ACCEPTED" : "REJECTED", p90_bad ? " (P90 门)" : "",
+                        ground_bad ? " (去地面drot门)" : "", std::max(0.0, inl), corr, n0[q], n1[q],
+                        n1p90[q], std::max(0.0, tgt_ghost));
           ialign::LoopImageParams ip;
           ip.res = 0.08;
           ip.tol = 0.15;
           ip.z_above = o.z_above;
           ialign::renderTopDownPair(*tgt, *src, T0, Ta, ip, la, lb, lm3,
                                     (cdir / (std::string(base) + ".png")).string());
+          // 去地面重配准的可视化: 上=原结果(Ta) 下=去地面后重新配准的结果(ngT[q]),
+          // 用**同一份完整点云**画, 竖直结构对没对齐一眼能看出来。
+          if (ngDrot[q] >= 0) {
+            char lm4[288];
+            std::snprintf(lm4, sizeof(lm4),
+                          "GROUND-REMOVAL RECHECK: drot=%.3F DEG (>%s%.2F = 判有问题)%s | "
+                          "TOP=ORIGINAL RESULT  BOTTOM=REFIT W/O GROUND",
+                          ngDrot[q], o.ground_drot_max > 0 ? "" : " 未启用, 阈值=",
+                          o.ground_drot_max > 0 ? o.ground_drot_max : 0.0,
+                          ground_bad ? " ** 本条已因此被剔 **" : "");
+            ialign::renderTopDownPair(*tgt, *src, Ta, ngT[q], ip, la, lb, lm4,
+                                      (cdir / (std::string(base) + "_ground.png")).string());
+          }
         }
       }
     }
     out.n_rej_p90 += n_rej_p90_region.load();
+    out.n_rej_ground_drot += n_rej_ground_drot_region.load();
     for (std::size_t q = 0; q < rb.size(); q++) {
       out.n_try++;
       if (!ok[q]) continue;
@@ -3849,6 +4217,10 @@ static CrossCon buildCross(const std::vector<RefFrame>& ref, const ialign::Sessi
     printf("  --cross_nn_p90_max %.3f: 剔除了 %d 个候选 (中位数正常但 nn p90 超限 —— 大概率是\n"
            "    大片平面结构切向滑动 + 局部真错位, 中位数看不出来的那种)\n",
            o.cross_nn_p90_max, out.n_rej_p90);
+  if (o.ground_drot_max > 0 && out.n_rej_ground_drot)
+    printf("  --ground_drot_max %.3f 度: 剔除了 %d 个候选 (去地面后重配准, 旋转角度差超限 ——\n"
+           "    地面这个大平面把'竖直结构其实没对齐'从残差里平掉了那种)\n",
+           o.ground_drot_max, out.n_rej_ground_drot);
   if (o.cross_per_sess) {
     std::map<int, int> per;
     for (std::size_t k = 0; k < cand_e.size(); k++) {
@@ -4687,9 +5059,8 @@ static int runIncr(const Opt& o, std::vector<ialign::SessionData>& S,
     Opt& oo = const_cast<Opt&>(o);
     printf("\n=== 参数 ===\n");
     const bool conflict = diffParams(store / "params.yaml", oo);
-    const fs::path eff = fs::path(o.out) / "params_effective.yaml";
-    saveParams(eff, oo, "local_align 本次生效的参数");
-    printf("  写出: %s\n", eff.string().c_str());
+    // 只写 <store>/params.yaml 这一份 —— <out>/params_effective.yaml 是重复的
+    // (--out 还会随实验被清掉, 那一份本来就留不住)。
     // store/params.yaml 的语义是"**这批存档是用什么参数造出来的**"。
     // 配准类参数变了却仍复用旧存档时, 把新参数盖上去就是在撒谎 —— 存档里的约束仍是旧参数
     // 产物, 而且下次运行就再也比不出差异, 警告只响一次。所以这种情况**不覆盖**, 另存一份。
@@ -4910,6 +5281,7 @@ static int runIncr(const Opt& o, std::vector<ialign::SessionData>& S,
   co.sigma_rel_r = o.ba_rel_r;
   co.attitude_w = o.ba_att_w;
   co.huber = o.ba_huber;
+  co.cauchy = o.ba_cauchy;
   co.iters = o.ba_iters;
   co.sigma_px = o.ba_sigma_px;
   co.opt_ext = o.opt_ext;
@@ -5267,6 +5639,51 @@ static int runIncr(const Opt& o, std::vector<ialign::SessionData>& S,
         savePoses(store / (S[k].name + ".csv"), S[k], Tv, ext, base_utm);
       }
       printf("  位姿存档已按联合优化的结果更新\n");
+    }
+  }
+
+  // ---- 姿态自检: 车体 roll/pitch 应接近水平 ----
+  //
+  // 用的是 Tcur (车体位姿 T_w_v), 不是 T_w_l —— 车在路上到底歪不歪, 问的是车体本身,
+  // 雷达相对车体的固定安装角(外参)不该算进来。此时 Tcur 已经是这次运行的**最终**状态:
+  // 不管本次有没有跑配准(全部 session 都已存档时也一样), 上面已经把该更新的都更新过了。
+  //
+  // 纯诊断: 不影响任何求解, 只是把 roll/pitch 明显偏离水平的关键帧列出来 —— 这种帧
+  // 大概率是被某条错误约束拽歪了, 或者附近压根没有约束、只剩 INS 先验飘着。
+  {
+    printf("\n=== 姿态自检 (车体 roll/pitch 应接近水平; --attitude_warn_deg %.1f 度) ===\n",
+           o.attitude_warn_deg);
+    std::vector<double> roll(ntot, 0.0), pitch(ntot, 0.0), sev(ntot, 0.0);
+    for (int g = 0; g < ntot; g++) {
+      const Eigen::Matrix3d& R = Tcur[g].linear();
+      roll[g] = std::atan2(R(2, 1), R(2, 2)) * 180.0 / M_PI;
+      pitch[g] = -std::asin(std::max(-1.0, std::min(1.0, R(2, 0)))) * 180.0 / M_PI;
+      sev[g] = std::max(std::abs(roll[g]), std::abs(pitch[g]));
+    }
+    std::vector<double> sorted = sev;
+    std::sort(sorted.begin(), sorted.end());
+    printf("  |roll|/|pitch| 里较大的那个, 全体分布: 中位=%.2f p90=%.2f p99=%.2f max=%.2f 度\n",
+           sorted[sorted.size() / 2], sorted[sorted.size() * 9 / 10],
+           sorted[sorted.size() * 99 / 100], sorted.back());
+    std::vector<int> bad;
+    for (int g = 0; g < ntot; g++) {
+      if (sev[g] > o.attitude_warn_deg) bad.push_back(g);
+    }
+    if (bad.empty()) {
+      printf("  没有帧超过告警阈值\n");
+    } else {
+      std::sort(bad.begin(), bad.end(), [&](int a, int b) { return sev[a] > sev[b]; });
+      printf("  !! %zu / %d 帧的 roll/pitch 超过 %.1f 度 (按严重程度排序, 最多列 20 条):\n",
+             bad.size(), ntot, o.attitude_warn_deg);
+      for (std::size_t u = 0; u < std::min<std::size_t>(20, bad.size()); u++) {
+        const int g = bad[u];
+        const int sk = sess_of_g[g];
+        const int li = g - ofs[sk];
+        printf("      %-34s #%-5d roll=%+7.2f pitch=%+7.2f 度  %s\n", S[sk].name.c_str(), li,
+               roll[g], pitch[g],
+               fs::path(S[sk].frames[li].pcd_path).filename().string().c_str());
+      }
+      if (bad.size() > 20) printf("      ... 还有 %zu 条未列出\n", bad.size() - 20);
     }
   }
 
@@ -5630,6 +6047,7 @@ static int runJoint(const Opt& o, ialign::SessionData& A, ialign::SessionData& B
   co.sigma_rel_r = o.ba_rel_r;
   co.attitude_w = o.ba_att_w;
   co.huber = o.ba_huber;
+  co.cauchy = o.ba_cauchy;
   co.iters = o.ba_iters;
   co.sigma_px = o.ba_sigma_px;
   co.opt_ext = o.opt_ext;
@@ -6631,6 +7049,7 @@ int main(int argc, char** argv) {
     co.sigma_rel_r = o.ba_rel_r;
     co.attitude_w = o.ba_att_w;
     co.huber = o.ba_huber;
+    co.cauchy = o.ba_cauchy;
     co.chi2_reject = o.ba_chi2;
     co.iters = o.ba_iters;
     co.sigma_px = o.ba_sigma_px;
